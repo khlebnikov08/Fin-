@@ -2128,7 +2128,7 @@ export default function App() {
       <OnboardingTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-        onNavigateTab={(tab) => setActiveTab(tab)}
+        onNavigateTab={setActiveTab}
       />
 
       <DownloadModal

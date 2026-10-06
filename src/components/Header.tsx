@@ -204,6 +204,7 @@ export const Header: React.FC<HeaderProps> = ({
           return (
             <button
               key={item.id}
+              data-tour={`nav-${item.id}`}
               onClick={() => {
                 sound.playClick();
                 setActiveTab(item.id);
