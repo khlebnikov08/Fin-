@@ -11,6 +11,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { sound } from '../../utils/audio';
+import { UNPAID_CREDIT_CARD_GAME_OVER_LIMIT } from '../../utils/gameRules';
 
 interface BankingTabProps {
   cash: number;
@@ -204,7 +205,7 @@ export const BankingTab: React.FC<BankingTabProps> = ({
                   }`}
                 >
                   {creditCard.isOverdue
-                    ? 'Истек! Штраф +28% годовых'
+                    ? `Просрочка: проценты ${(creditCard.interestRate * 100).toLocaleString('ru-RU')}% + штраф ${(creditCard.penaltyRate * 100).toLocaleString('ru-RU')}%/год`
                     : creditCard.usedAmount > 0
                     ? '1 год без процентов'
                     : '1 год при открытии'}
@@ -213,7 +214,7 @@ export const BankingTab: React.FC<BankingTabProps> = ({
             </div>
 
             <p className="text-[11px] text-rose-600 font-medium mb-3">
-              * Важно: Игру нельзя завершить, если не погашена задолженность по кредитной карте!
+              Если долг достигнет {UNPAID_CREDIT_CARD_GAME_OVER_LIMIT.toLocaleString('ru-RU')} ₽, нагрянет налоговая, счета арестуют, а игрока посадят — игра завершится.
             </p>
           </div>
 

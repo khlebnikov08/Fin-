@@ -11,6 +11,7 @@ interface GameOverModalProps {
   totalCapital: number;
   cashAmount: number;
   investedAmount: number;
+  debtAmount: number;
   finalJoy: number;
   yearsTaken: number;
   goal: LifeGoal;
@@ -27,6 +28,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   totalCapital,
   cashAmount,
   investedAmount,
+  debtAmount,
   finalJoy,
   yearsTaken,
   goal,
@@ -110,24 +112,31 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             Формула результата
           </div>
 
-          <div className="flex items-center justify-center gap-2 sm:gap-4 text-sm font-semibold">
-            <div className="text-center">
-              <span className="text-[11px] text-slate-500 block font-normal">Вложено</span>
-              <span className="text-slate-800 tabular-nums">
+          <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center justify-center gap-1 sm:gap-3 text-sm font-semibold">
+            <div className="text-center min-w-0">
+              <span className="text-[11px] text-slate-500 block font-normal">Активы</span>
+              <span className="text-slate-800 tabular-nums text-xs sm:text-sm">
                 {investedAmount.toLocaleString('ru-RU')} ₽
               </span>
             </div>
             <span className="text-slate-400 font-bold">+</span>
-            <div className="text-center">
-              <span className="text-[11px] text-slate-500 block font-normal">Свободные деньги</span>
-              <span className="text-slate-800 tabular-nums">
+            <div className="text-center min-w-0">
+              <span className="text-[11px] text-slate-500 block font-normal">Наличные</span>
+              <span className="text-slate-800 tabular-nums text-xs sm:text-sm">
                 {cashAmount.toLocaleString('ru-RU')} ₽
+              </span>
+            </div>
+            <span className="text-slate-400 font-bold">−</span>
+            <div className="text-center min-w-0">
+              <span className="text-[11px] text-slate-500 block font-normal">Долги</span>
+              <span className={`tabular-nums text-xs sm:text-sm ${debtAmount > 0 ? 'text-rose-700' : 'text-slate-800'}`}>
+                {debtAmount.toLocaleString('ru-RU')} ₽
               </span>
             </div>
           </div>
 
           <div className="pt-2 border-t border-slate-200/80">
-            <span className="text-xs text-slate-500 block">Итоговый совокупный капитал:</span>
+            <span className="text-xs text-slate-500 block">Итоговый чистый капитал:</span>
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 tabular-nums">
               {totalCapital.toLocaleString('ru-RU')} ₽
             </span>

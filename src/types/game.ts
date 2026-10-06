@@ -13,6 +13,8 @@ export interface LifeGoal {
     hasApartment?: boolean;
     hasBusiness?: boolean;
     passiveIncomeTarget?: number;
+    primaryResidenceValueTarget?: number;
+    cashReserveTarget?: number;
   };
 }
 
@@ -52,8 +54,9 @@ export interface BondAsset {
   couponRate: number; // annual percentage e.g. 0.12
   faceValue: number; // 1000 ₽ per bond
   riskText: string;
-  defaultChance: number; // chance to default
+  defaultChance: number; // chance to default per issue, per year
   ownedCount: number;
+  isDefaulted?: boolean;
 }
 
 export interface BankDeposit {

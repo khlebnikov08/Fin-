@@ -23,6 +23,7 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
   const totalIncome =
     report.salaryIncome +
     report.businessIncome +
+    (report.rentIncomeEarned || 0) +
     report.dividendsEarned +
     report.couponsEarned +
     report.depositInterestEarned +
@@ -118,10 +119,22 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-slate-600">
                   <Sparkles className="w-4 h-4 text-emerald-500" />
-                  Прибыль бизнеса & Аренда
+                  Прибыль бизнеса
                 </span>
                 <span className="font-semibold text-emerald-600 tabular-nums">
                   +{report.businessIncome.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+            )}
+
+            {(report.rentIncomeEarned || 0) > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-slate-600">
+                  <Landmark className="w-4 h-4 text-cyan-500" />
+                  Арендный доход недвижимости
+                </span>
+                <span className="font-semibold text-cyan-600 tabular-nums">
+                  +{(report.rentIncomeEarned || 0).toLocaleString('ru-RU')} ₽
                 </span>
               </div>
             )}

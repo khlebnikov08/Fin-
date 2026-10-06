@@ -1,5 +1,14 @@
-import React from 'react';
-import { Volume2, VolumeX, BookOpen, Trophy, RotateCcw, Download, HelpCircle, GraduationCap } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  BookOpen,
+  Download,
+  GraduationCap,
+  MoreHorizontal,
+  RotateCcw,
+  Trophy,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { sound } from '../utils/audio';
 
 export type ActiveTab = 'overview' | 'investments' | 'banking' | 'career' | 'news' | 'analytics';
@@ -14,8 +23,6 @@ interface HeaderProps {
   onRestartGame: () => void;
   isMuted: boolean;
   setIsMuted: (muted: boolean) => void;
-  year: number;
-  gameMode: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -28,12 +35,19 @@ export const Header: React.FC<HeaderProps> = ({
   onRestartGame,
   isMuted,
   setIsMuted,
-  year,
-  gameMode,
 }) => {
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+
   const handleToggleSound = () => {
     const next = sound.toggleMute();
     setIsMuted(next);
+  };
+
+  const runMenuAction = (action: () => void, isRestart = false) => {
+    setIsActionsMenuOpen(false);
+    if (isRestart) sound.playWarning();
+    else sound.playClick();
+    action();
   };
 
   const navItems: { id: ActiveTab; label: string }[] = [
@@ -60,12 +74,6 @@ export const Header: React.FC<HeaderProps> = ({
           >
             ФинПуть
           </a>
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500">
-            <span aria-hidden="true">·</span>
-            <span className="font-semibold text-slate-800">Год {year}</span>
-            <span aria-hidden="true">·</span>
-            <span className="text-slate-500 truncate max-w-[120px]">{gameMode}</span>
-          </div>
         </div>
 
         {/* Zone 2: 4-6 clean text navigation links */}
@@ -92,59 +100,10 @@ export const Header: React.FC<HeaderProps> = ({
           })}
         </nav>
 
-        {/* Zone 3: 1-2 primary actions */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Zone 3: Sound stays handy; secondary actions live in one menu. */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
-            onClick={() => {
-              sound.playClick();
-              onOpenDownload();
-            }}
-            className="p-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-semibold"
-            title="Скачать архив проекта (.zip)"
-            aria-label="Скачать архив"
-          >
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Скачать архив</span>
-          </button>
-
-          <button
-            onClick={() => {
-              sound.playClick();
-              onOpenTour();
-            }}
-            className="p-2 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-semibold"
-            title="Интерактивный тур и обучение"
-            aria-label="Обучение"
-          >
-            <GraduationCap className="w-4 h-4" />
-            <span className="hidden lg:inline">Обучение</span>
-          </button>
-
-          <button
-            onClick={() => {
-              sound.playClick();
-              onOpenRules();
-            }}
-            className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-            title="Правила и справочник механик"
-            aria-label="Правила игры"
-          >
-            <BookOpen className="w-4 h-4" />
-          </button>
-
-          <button
-            onClick={() => {
-              sound.playClick();
-              onOpenLeaderboard();
-            }}
-            className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-            title="Рейтинг рекордов"
-            aria-label="Рейтинг рекордов"
-          >
-            <Trophy className="w-4 h-4" />
-          </button>
-
-          <button
+            type="button"
             onClick={handleToggleSound}
             className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
             title={isMuted ? 'Включить звук' : 'Выключить звук'}
@@ -153,17 +112,88 @@ export const Header: React.FC<HeaderProps> = ({
             {isMuted ? <VolumeX className="w-4 h-4 text-slate-400" /> : <Volume2 className="w-4 h-4 text-emerald-600" />}
           </button>
 
-          <button
-            onClick={() => {
-              sound.playWarning();
-              onRestartGame();
+          <div
+            className="relative"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setIsActionsMenuOpen(false);
+              }
             }}
-            className="px-3 py-1.5 text-xs font-medium text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5"
-            title="Начать новую игру"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setIsActionsMenuOpen(false);
+            }}
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Новая игра</span>
-          </button>
+            <button
+              type="button"
+              aria-label="Дополнительные действия"
+              aria-haspopup="menu"
+              aria-expanded={isActionsMenuOpen}
+              aria-controls="header-actions-menu"
+              onClick={() => {
+                sound.playClick();
+                setIsActionsMenuOpen((open) => !open);
+              }}
+              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+            >
+              <MoreHorizontal className="w-5 h-5" />
+            </button>
+
+            {isActionsMenuOpen && (
+              <div
+                id="header-actions-menu"
+                role="menu"
+                aria-label="Дополнительные действия"
+                className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl z-50"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runMenuAction(onOpenTour)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <GraduationCap className="w-4 h-4 text-indigo-600" />
+                  Интерактивное обучение
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runMenuAction(onOpenRules)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  Правила игры
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runMenuAction(onOpenLeaderboard)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <Trophy className="w-4 h-4" />
+                  Рейтинг рекордов
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runMenuAction(onOpenDownload)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <Download className="w-4 h-4 text-emerald-600" />
+                  Скачать архив
+                </button>
+                <div className="my-1.5 border-t border-slate-100" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runMenuAction(onRestartGame, true)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-rose-50 hover:text-rose-700"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Начать новую игру
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

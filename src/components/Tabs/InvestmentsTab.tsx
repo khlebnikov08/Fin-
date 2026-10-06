@@ -635,7 +635,7 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                 Облигации федерального займа (ОФЗ) и Корпоративные бонды
               </h3>
               <p className="text-xs text-slate-500">
-                Гарантированный фиксированный купонный доход каждый год прямо на ваш счет
+                Ежегодные купоны; для корпоративных выпусков и ВДО указан годовой риск дефолта.
               </p>
             </div>
             <div className="text-xs text-slate-500">
@@ -648,6 +648,9 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
               const annualCouponPerBond = Math.round(bond.faceValue * bond.couponRate);
               const totalOwnedCost = bond.ownedCount * bond.faceValue;
               const totalAnnualCoupons = bond.ownedCount * annualCouponPerBond;
+              const annualDefaultRisk = (bond.defaultChance * 100).toLocaleString('ru-RU', {
+                maximumFractionDigits: 2,
+              });
 
               return (
                 <div
@@ -666,14 +669,18 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       </div>
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                          bond.type === 'OFZ'
+                          bond.isDefaulted
+                            ? 'bg-rose-100 text-rose-800'
+                            : bond.type === 'OFZ'
                             ? 'bg-emerald-50 text-emerald-800'
                             : bond.type === 'CORP'
                             ? 'bg-blue-50 text-blue-800'
                             : 'bg-amber-50 text-amber-800'
                         }`}
                       >
-                        {bond.type === 'OFZ'
+                        {bond.isDefaulted
+                          ? 'ДЕФОЛТ'
+                          : bond.type === 'OFZ'
                           ? 'ОФЗ (Гос)'
                           : bond.type === 'CORP'
                           ? 'Корпоративные'
@@ -710,8 +717,10 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       )}
                     </div>
 
-                    <p className="text-[11px] text-slate-500 italic leading-relaxed">
-                      {bond.riskText}
+                    <p className={`text-[11px] italic leading-relaxed ${bond.isDefaulted ? 'text-rose-700 font-semibold' : 'text-slate-500'}`}>
+                      {bond.isDefaulted
+                        ? 'Эмитент объявил дефолт: вложенный номинал потерян, купоны больше не выплачиваются.'
+                        : `${bond.riskText} Риск дефолта выпуска: ${annualDefaultRisk}% в год.`}
                     </p>
                   </div>
 
@@ -721,14 +730,14 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                         sound.playCoin();
                         onBuyBond(bond.id, 10);
                       }}
-                      disabled={cash < bond.faceValue * 10}
+                      disabled={bond.isDefaulted || cash < bond.faceValue * 10}
                       className={`py-2 px-3 rounded-xl text-xs font-semibold transition-colors ${
-                        cash >= bond.faceValue * 10
+                        !bond.isDefaulted && cash >= bond.faceValue * 10
                           ? 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer'
                           : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                       }`}
                     >
-                      Купить 10 шт ({(bond.faceValue * 10).toLocaleString('ru-RU')} ₽)
+                      {bond.isDefaulted ? 'Выпуск закрыт' : `Купить 10 шт (${(bond.faceValue * 10).toLocaleString('ru-RU')} ₽)`}
                     </button>
 
                     <button
