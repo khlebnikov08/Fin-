@@ -13,6 +13,8 @@ export interface LifeGoal {
     hasApartment?: boolean;
     hasBusiness?: boolean;
     passiveIncomeTarget?: number;
+    primaryResidenceValueTarget?: number;
+    cashReserveTarget?: number;
   };
 }
 
@@ -52,8 +54,9 @@ export interface BondAsset {
   couponRate: number; // annual percentage e.g. 0.12
   faceValue: number; // 1000 ₽ per bond
   riskText: string;
-  defaultChance: number; // chance to default
+  defaultChance: number; // chance to default per issue, per year
   ownedCount: number;
+  isDefaulted?: boolean;
 }
 
 export interface BankDeposit {
@@ -108,6 +111,14 @@ export interface RealEstateProperty {
   description: string;
 }
 
+export interface BusinessDisruption {
+  id: string;
+  title: string;
+  description: string;
+  profitMultiplier: number;
+  yearsRemaining: number;
+}
+
 export interface BusinessEmpire {
   id: string;
   name: string;
@@ -116,7 +127,7 @@ export interface BusinessEmpire {
   baseCost: number;
   currentValuation: number;
   annualProfit: number;
-  level: number; // 0 = not owned, 1 = Startup, 2 = Scale, 3 = Franchise, 4 = Federal Holding, 5 = IPO Listed!
+  level: number;
   maxLevel: number;
   upgradeCost: number;
   owned: boolean;
@@ -127,6 +138,7 @@ export interface BusinessEmpire {
   stockTicker?: string;
   stockAssetId?: string;
   lastProfitMultiplier?: number;
+  activeDisruption?: BusinessDisruption;
 }
 
 export interface Loan {
@@ -155,6 +167,7 @@ export interface DebitCard {
   cashbackRate: number; // e.g. 0.03 for 3%
   annualFee: number;
   benefitDescription: string;
+  lastFeePaidYear?: number;
 }
 
 export interface InsurancePolicy {
@@ -259,7 +272,9 @@ export interface TurnReport {
   dividendsEarned: number;
   couponsEarned: number;
   depositInterestEarned: number;
+  depositInterestAccrued?: number;
   depositMaturedReturned?: number;
+  depositPrincipalReturned?: number;
   cashbackEarned: number;
   taxDeductionsEarned: number;
   mandatoryExpensesPaid: number;

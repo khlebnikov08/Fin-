@@ -9,6 +9,7 @@ interface TurnSummaryModalProps {
   onClose: () => void;
   inflationRate: number;
   currentNews?: MacroNews | null;
+  isBalancedEconomy: boolean;
 }
 
 export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
@@ -17,12 +18,14 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
   onClose,
   inflationRate,
   currentNews,
+  isBalancedEconomy,
 }) => {
   if (!isOpen || !report) return null;
 
   const totalIncome =
     report.salaryIncome +
     report.businessIncome +
+    (report.rentIncomeEarned || 0) +
     report.dividendsEarned +
     report.couponsEarned +
     report.depositInterestEarned +
@@ -36,6 +39,9 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
     report.cardFeesPaid +
     report.loanPaymentsPaid +
     report.creditCardInterestPaid;
+  const depositPrincipalReturned = isBalancedEconomy
+    ? report.depositPrincipalReturned ?? Math.max(0, (report.depositMaturedReturned || 0) - report.depositInterestEarned)
+    : report.depositMaturedReturned || 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-200">
@@ -98,6 +104,12 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
           </div>
         </div>
 
+        {isBalancedEconomy && (
+          <p className="-mt-3 rounded-xl border border-teal-100 bg-teal-50/60 px-3 py-2 text-[11px] leading-relaxed text-teal-950">
+            Чистый поток за полный год = доходы − расходы + возврат тела вклада + денежные события. Тело вклада — возврат собственного капитала, а проценты по ещё действующим вкладам остаются внутри вклада; они не считаются наличным доходом. Платежи по кредитам уже учтены в расходах.
+          </p>
+        )}
+
         {/* Detailed Incomes Breakdown */}
         <div className="space-y-2">
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -118,10 +130,22 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-slate-600">
                   <Sparkles className="w-4 h-4 text-emerald-500" />
-                  Прибыль бизнеса & Аренда
+                  Прибыль бизнеса
                 </span>
                 <span className="font-semibold text-emerald-600 tabular-nums">
                   +{report.businessIncome.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+            )}
+
+            {(report.rentIncomeEarned || 0) > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-slate-600">
+                  <Landmark className="w-4 h-4 text-cyan-500" />
+                  Арендный доход недвижимости
+                </span>
+                <span className="font-semibold text-cyan-600 tabular-nums">
+                  +{(report.rentIncomeEarned || 0).toLocaleString('ru-RU')} ₽
                 </span>
               </div>
             )}
@@ -154,10 +178,22 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-slate-600">
                   <Landmark className="w-4 h-4 text-teal-500" />
-                  Проценты по вкладам
+                  {isBalancedEconomy ? 'Проценты по погашенным вкладам' : 'Проценты по вкладам'}
                 </span>
                 <span className="font-semibold text-teal-600 tabular-nums">
                   +{report.depositInterestEarned.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+            )}
+
+            {isBalancedEconomy && (report.depositInterestAccrued || 0) > 0 && (
+              <div className="flex items-center justify-between rounded-xl border border-teal-100 bg-teal-50/50 px-2.5 py-2 text-teal-900">
+                <span className="flex items-center gap-2 text-xs sm:text-sm">
+                  <Landmark className="w-4 h-4 text-teal-600 shrink-0" />
+                  Начислено во вклады (остаётся в активе)
+                </span>
+                <span className="font-semibold tabular-nums">
+                  +{(report.depositInterestAccrued || 0).toLocaleString('ru-RU')} ₽
                 </span>
               </div>
             )}
@@ -166,10 +202,10 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
               <div className="flex items-center justify-between bg-teal-50/80 p-2.5 rounded-xl border border-teal-200 text-teal-950">
                 <span className="flex items-center gap-2 font-bold text-xs sm:text-sm">
                   <Landmark className="w-4 h-4 text-teal-600 shrink-0" />
-                  Возврат закрытого вклада (тело + проценты)
+                  {isBalancedEconomy ? 'Возврат тела вклада (не доход)' : 'Возврат закрытого вклада (тело + проценты)'}
                 </span>
                 <span className="font-extrabold text-teal-800 tabular-nums text-sm">
-                  +{(report.depositMaturedReturned || 0).toLocaleString('ru-RU')} ₽
+                  +{depositPrincipalReturned.toLocaleString('ru-RU')} ₽
                 </span>
               </div>
             )}
@@ -227,6 +263,15 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
                 <span className="text-slate-600">Полисы страхования (ДМС, имущество)</span>
                 <span className="font-medium text-slate-700 tabular-nums">
                   -{report.insurancePaid.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+            )}
+
+            {isBalancedEconomy && report.cardFeesPaid > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Годовое обслуживание дебетовой карты</span>
+                <span className="font-medium text-slate-700 tabular-nums">
+                  -{report.cardFeesPaid.toLocaleString('ru-RU')} ₽
                 </span>
               </div>
             )}

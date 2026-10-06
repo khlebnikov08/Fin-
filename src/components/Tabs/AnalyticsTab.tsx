@@ -12,6 +12,7 @@ interface AnalyticsTabProps {
   depositsValue: number;
   cryptoValue: number;
   businessValue: number;
+  primaryResidenceValue: number;
   debtTotal: number;
   totalDividendsEarned: number;
   totalCouponsEarned: number;
@@ -28,6 +29,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({
   depositsValue,
   cryptoValue,
   businessValue,
+  primaryResidenceValue,
   debtTotal,
   totalDividendsEarned,
   totalCouponsEarned,
@@ -36,7 +38,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({
 }) => {
   const assetsSum = Math.max(
     1,
-    cash + stocksValue + bondsValue + depositsValue + cryptoValue + businessValue
+    cash + stocksValue + bondsValue + depositsValue + cryptoValue + businessValue + primaryResidenceValue
   );
 
   const assetCategories = [
@@ -45,7 +47,8 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({
     { label: 'Облигации', value: bondsValue, color: 'bg-amber-500', textColor: 'text-amber-700' },
     { label: 'Вклады в банках', value: depositsValue, color: 'bg-teal-500', textColor: 'text-teal-700' },
     { label: 'Криптовалюта', value: cryptoValue, color: 'bg-purple-500', textColor: 'text-purple-700' },
-    { label: 'Бизнес & Недвижимость', value: businessValue, color: 'bg-indigo-500', textColor: 'text-indigo-700' },
+    { label: 'Бизнес & Инвестиционная недвижимость', value: businessValue, color: 'bg-indigo-500', textColor: 'text-indigo-700' },
+    { label: 'Собственное жильё', value: primaryResidenceValue, color: 'bg-cyan-500', textColor: 'text-cyan-700' },
   ].filter((a) => a.value > 0);
 
   return (

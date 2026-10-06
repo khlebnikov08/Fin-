@@ -9,6 +9,8 @@ interface EventModalProps {
   onClose: () => void;
   onSelectChoice?: (choice: EventChoice) => void;
   insuranceSavedLoss?: boolean;
+  emergencyFundProtectionAmount?: number;
+  cashDeltaAfterProtection?: number;
 }
 
 export const EventModal: React.FC<EventModalProps> = ({
@@ -17,11 +19,14 @@ export const EventModal: React.FC<EventModalProps> = ({
   onClose,
   onSelectChoice,
   insuranceSavedLoss,
+  emergencyFundProtectionAmount = 0,
+  cashDeltaAfterProtection,
 }) => {
   if (!isOpen || !event) return null;
 
   const isGood = event.cashDelta > 0 || event.joyDelta > 0;
   const hasChoices = event.choices && event.choices.length > 0;
+  const displayedCashDelta = cashDeltaAfterProtection ?? event.cashDelta;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-200">
@@ -72,6 +77,18 @@ export const EventModal: React.FC<EventModalProps> = ({
               <span className="font-semibold block">Полис страхования сработал!</span>
               <span className="text-emerald-700 text-xs">
                 Расходы в размере {event.insuranceAvoidedLoss?.toLocaleString('ru-RU')} ₽ полностью покрыты страховой компанией.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {emergencyFundProtectionAmount > 0 && (
+          <div className="p-3.5 bg-sky-50 border border-sky-200 rounded-2xl text-sky-800 text-xs sm:text-sm flex items-center gap-2.5 text-left">
+            <ShieldCheck className="w-5 h-5 text-sky-600 shrink-0" />
+            <div>
+              <span className="font-semibold block">Подушка безопасности смягчила удар</span>
+              <span className="text-sky-700 text-xs">
+                Резерв защитил {emergencyFundProtectionAmount.toLocaleString('ru-RU')} ₽ от потерь.
               </span>
             </div>
           </div>
@@ -143,14 +160,14 @@ export const EventModal: React.FC<EventModalProps> = ({
                   className={`text-base font-bold tabular-nums ${
                     insuranceSavedLoss
                       ? 'text-emerald-600'
-                      : event.cashDelta >= 0
+                      : displayedCashDelta >= 0
                       ? 'text-emerald-600'
                       : 'text-rose-600'
                   }`}
                 >
                   {insuranceSavedLoss
                     ? '0 ₽ (покрыто)'
-                    : `${event.cashDelta >= 0 ? '+' : ''}${event.cashDelta.toLocaleString('ru-RU')} ₽`}
+                    : `${displayedCashDelta >= 0 ? '+' : ''}${displayedCashDelta.toLocaleString('ru-RU')} ₽`}
                 </span>
               </div>
             </div>

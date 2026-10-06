@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Target, Heart, Sparkles, ChevronDown, ChevronUp, CheckCircle2, AlertCircle, HelpCircle, Flame, Rocket, Clock } from 'lucide-react';
 import { LifeGoal, GameMode, CharacterPreset, MacroNews } from '../types/game';
+import { evaluateGoalStatus } from '../utils/gameRules';
 
 interface StatusBarProps {
   character: CharacterPreset;
@@ -12,6 +13,8 @@ interface StatusBarProps {
   netWorth: number;
   joy: number;
   hasApartment: boolean;
+  primaryResidenceValue: number;
+  creditCardDebt: number;
   hasBusiness: boolean;
   passiveIncome: number;
   activeCrisis?: MacroNews | null;
@@ -28,6 +31,8 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   netWorth,
   joy,
   hasApartment,
+  primaryResidenceValue,
+  creditCardDebt,
   hasBusiness,
   passiveIncome,
   activeCrisis,
@@ -35,16 +40,22 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 }) => {
   const [showGoalDetails, setShowGoalDetails] = useState(false);
 
-  // Capital progress calculation
-  const capitalProgress = goal.targetCapital > 0 ? Math.min(100, (netWorth / goal.targetCapital) * 100) : 100;
-  const joyMet = joy >= goal.minJoy;
-  const capitalMet = netWorth >= goal.targetCapital;
-
-  const apartmentMet = !goal.requiredAssets?.hasApartment || hasApartment;
-  const businessMet = !goal.requiredAssets?.hasBusiness || hasBusiness;
-  const passiveMet = !goal.requiredAssets?.passiveIncomeTarget || passiveIncome >= goal.requiredAssets.passiveIncomeTarget;
-
-  const allRequirementsMet = capitalMet && joyMet && apartmentMet && businessMet && passiveMet;
+  const goalStatus = evaluateGoalStatus({
+    mode,
+    goal,
+    netWorth,
+    cash,
+    joy,
+    hasApartment,
+    primaryResidenceValue,
+    hasBusiness,
+    passiveIncome,
+    creditCardDebt,
+  });
+  const capitalProgress = goal.targetCapital > 0
+    ? Math.max(0, Math.min(100, (netWorth / goal.targetCapital) * 100))
+    : 100;
+  const { apartmentMet, residenceValueMet, cashReserveMet, businessMet, passiveIncomeMet } = goalStatus;
 
   // Emotional status label
   const getJoyStatus = (val: number) => {
@@ -171,9 +182,39 @@ export const StatusBar: React.FC<StatusBarProps> = ({
               </div>
               {goal.requiredAssets?.hasApartment && (
                 <div className="flex justify-between">
-                  <span>Своя квартира:</span>
+                  <span>Собственное жильё:</span>
                   <span className={apartmentMet ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
-                    {apartmentMet ? '✓ Куплена' : 'Не куплена'}
+                    {apartmentMet ? '✓ Есть' : 'Не куплено'}
+                  </span>
+                </div>
+              )}
+              {goal.requiredAssets?.primaryResidenceValueTarget && (
+                <div className="flex justify-between">
+                  <span>Стоимость жилья (от {goal.requiredAssets.primaryResidenceValueTarget.toLocaleString('ru-RU')} ₽):</span>
+                  <span className={residenceValueMet ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
+                    {primaryResidenceValue.toLocaleString('ru-RU')} ₽
+                  </span>
+                </div>
+              )}
+              {goal.requiredAssets?.cashReserveTarget && (
+                <div className="flex justify-between">
+                  <span>Резерв (от {goal.requiredAssets.cashReserveTarget.toLocaleString('ru-RU')} ₽):</span>
+                  <span className={cashReserveMet ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
+                    {cash.toLocaleString('ru-RU')} ₽
+                  </span>
+                </div>
+              )}
+              {creditCardDebt > 0 && (
+                <div className="flex justify-between">
+                  <span>Долг по кредитной карте:</span>
+                  <span className="text-rose-600 font-medium">{creditCardDebt.toLocaleString('ru-RU')} ₽</span>
+                </div>
+              )}
+              {goal.requiredAssets?.passiveIncomeTarget && (
+                <div className="flex justify-between">
+                  <span>Пассивный доход:</span>
+                  <span className={passiveIncomeMet ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
+                    {passiveIncome.toLocaleString('ru-RU')} ₽ / год
                   </span>
                 </div>
               )}
@@ -186,7 +227,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
                 </div>
               )}
 
-              {allRequirementsMet && onFinishGameEarly && (
+              {goalStatus.canClaimVictory && mode === 'GOAL' && onFinishGameEarly && (
                 <button
                   onClick={onFinishGameEarly}
                   className="w-full mt-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs shadow-xs"

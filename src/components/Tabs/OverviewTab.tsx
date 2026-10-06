@@ -1,9 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Wallet,
   Receipt,
-  Heart,
-  TrendingUp,
   ShieldCheck,
   CheckCircle2,
   AlertCircle,
@@ -15,7 +12,6 @@ import {
   CreditCard as CreditCardIcon,
   ChevronDown,
   ChevronUp,
-  Building,
 } from 'lucide-react';
 import {
   OptionalExpense,
@@ -25,6 +21,7 @@ import {
 } from '../../types/game';
 import { MandatoryExpensesBreakdown } from '../../utils/expenses';
 import { sound } from '../../utils/audio';
+import { emergencyFundCoverageRate } from '../../utils/gameRules';
 
 interface OverviewTabProps {
   cash: number;
@@ -46,7 +43,6 @@ interface OverviewTabProps {
   creditCard: CreditCard;
   inflationRate: number;
   onAdvanceYear: () => void;
-  year: number;
   emergencyFundMonths: number;
   breakdown?: MandatoryExpensesBreakdown;
 }
@@ -71,14 +67,17 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   creditCard,
   inflationRate,
   onAdvanceYear,
-  year,
   emergencyFundMonths,
   breakdown,
 }) => {
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [showInsuranceOptions, setShowInsuranceOptions] = useState(false);
   const availableCredit = creditCard.limit - creditCard.usedAmount;
   const canPayCash = cash >= mandatoryExpensesCost;
   const canPayCredit = availableCredit >= mandatoryExpensesCost;
+  const emergencyFundCoverage = emergencyFundCoverageRate(emergencyFundMonths);
+  const activeInsuranceCount = insurances.filter((insurance) => insurance.active).length;
+  const activeInsuranceLabel = activeInsuranceCount === 1 ? '1 активен' : `${activeInsuranceCount} активны`;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-150">
@@ -92,7 +91,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                 <Receipt className="w-5 h-5" />
               </span>
               <h2 className="text-base sm:text-lg font-bold text-slate-900 font-heading">
-                Бюджет Года {year}
+                Бюджет на год
               </h2>
             </div>
 
@@ -107,10 +106,16 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                 <span className="font-bold text-slate-900">{mandatoryExpensesCost.toLocaleString('ru-RU')} ₽</span>
               </div>
               <span className="text-slate-300">·</span>
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-500">Подушка безопасности:</span>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 max-w-full">
+                <span className="text-slate-500">Подушка:</span>
                 <span className={`font-semibold ${emergencyFundMonths >= 3 ? 'text-emerald-700' : 'text-amber-700'}`}>
                   {emergencyFundMonths.toFixed(1)} мес.
+                </span>
+                <span className="font-semibold text-sky-700">
+                  · {Math.round(emergencyFundCoverage * 100)}% защиты от ЧП
+                </span>
+                <span className="text-[10px] text-slate-400" title="При 3 месяцах резерва защищается 25% ущерба, при 6 месяцах — 50%.">
+                  (3 мес. → 25% · 6 мес. → 50%)
                 </span>
               </div>
             </div>
@@ -345,65 +350,85 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
         {/* Right: Insurances (5 cols) */}
         <div className="lg:col-span-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 font-heading flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-teal-600" />
-              <span>Страхование (на 1 год)</span>
-            </h3>
-            <span className="text-[11px] text-slate-500">Защита от ЧП</span>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 font-heading flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-teal-600" />
+                <span>Страхование</span>
+              </h3>
+              <p className="text-[11px] text-slate-500">Полисы действуют один год</p>
+            </div>
+            <button
+              type="button"
+              aria-expanded={showInsuranceOptions}
+              aria-controls="insurance-options"
+              onClick={() => setShowInsuranceOptions((visible) => !visible)}
+              className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors flex items-center gap-1.5"
+            >
+              <span>{activeInsuranceCount > 0 ? activeInsuranceLabel : 'Не оформлено'}</span>
+              {showInsuranceOptions ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
           </div>
 
-          <div className="space-y-2.5">
-            {insurances.map((ins) => {
-              const isCar = ins.type === 'CAR_CASCO';
-              const isHome = ins.type === 'HOME';
-              const isDisabled = (isCar && !hasCar) || (isHome && !hasApartment);
+          {showInsuranceOptions ? (
+            <div id="insurance-options" className="space-y-2.5">
+              {insurances.map((ins) => {
+                const isCar = ins.type === 'CAR_CASCO';
+                const isHome = ins.type === 'HOME';
+                const isDisabled = (isCar && !hasCar) || (isHome && !hasApartment);
 
-              return (
-                <div
-                  key={ins.type}
-                  className={`p-3.5 rounded-xl border transition-all flex items-center justify-between gap-3 ${
-                    ins.active
-                      ? 'border-teal-200 bg-teal-50/20'
-                      : isDisabled
-                      ? 'border-slate-100 bg-slate-50/50 opacity-40'
-                      : 'border-slate-200/90 bg-white hover:border-slate-300'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-xs text-slate-900">{ins.name}</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                      {ins.annualCost.toLocaleString('ru-RU')} ₽ / год
-                    </p>
-                  </div>
-
-                  <button
-                    disabled={isDisabled || (!ins.active && cash < ins.annualCost)}
-                    onClick={() => {
-                      sound.playCoin();
-                      onToggleInsurance(ins.type);
-                    }}
-                    className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                return (
+                  <div
+                    key={ins.type}
+                    className={`p-3.5 rounded-xl border transition-all flex items-center justify-between gap-3 ${
                       ins.active
-                        ? 'bg-teal-600 text-white'
+                        ? 'border-teal-200 bg-teal-50/20'
                         : isDisabled
-                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        ? 'border-slate-100 bg-slate-50/50 opacity-40'
+                        : 'border-slate-200/90 bg-white hover:border-slate-300'
                     }`}
                   >
-                    {ins.active ? '✓ Активен' : 'Оформить'}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-xs text-slate-900">{ins.name}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        {ins.annualCost.toLocaleString('ru-RU')} ₽ / год
+                      </p>
+                    </div>
+
+                    <button
+                      disabled={isDisabled || (!ins.active && cash < ins.annualCost)}
+                      onClick={() => {
+                        sound.playCoin();
+                        onToggleInsurance(ins.type);
+                      }}
+                      className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                        ins.active
+                          ? 'bg-teal-600 text-white'
+                          : isDisabled
+                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {ins.active ? '✓ Активен' : 'Оформить'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 text-[11px] text-slate-500 leading-relaxed">
+              {activeInsuranceCount > 0
+                ? 'Активные полисы защищают от соответствующих ЧП до конца этого года.'
+                : 'Страховки необязательны. При ЧП соответствующий активный полис покроет расходы.'}
+            </p>
+          )}
         </div>
       </div>
 
       {/* 3. Turn Advancement Action Button */}
-      <div className="pt-2">
+      <div className="sticky bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-slate-50/95 backdrop-blur-sm border-t border-slate-200 shadow-[0_-8px_16px_rgba(15,23,42,0.06)]">
         <button
           data-tour="btn-advance-year"
           onClick={() => {
@@ -411,20 +436,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             onAdvanceYear();
           }}
           disabled={!isMandatoryExpensesPaid}
-          className={`w-full py-4 px-6 rounded-2xl font-bold text-sm sm:text-base transition-all flex items-center justify-center gap-2 shadow-xs ${
+          className={`w-full py-3.5 px-6 rounded-xl font-bold text-sm sm:text-base transition-all flex items-center justify-center gap-2 shadow-xs ${
             isMandatoryExpensesPaid
               ? 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer hover:shadow-md'
               : 'bg-slate-200 text-slate-400 cursor-not-allowed'
           }`}
         >
-          <span>Завершить Год {year} и перейти к следующему</span>
+          <span>Завершить текущий год и перейти к следующему</span>
           <ArrowRight className="w-5 h-5" />
         </button>
 
         {!isMandatoryExpensesPaid && (
           <p className="text-center text-xs text-rose-600 font-medium mt-2 flex items-center justify-center gap-1">
             <AlertCircle className="w-3.5 h-3.5" />
-            <span>Для перехода к следующему году сначала оплатите обязательные расходы выше</span>
+            <span>Оплатите обязательные расходы, чтобы перейти дальше.</span>
           </p>
         )}
       </div>

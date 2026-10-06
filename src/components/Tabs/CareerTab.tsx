@@ -9,6 +9,7 @@ interface CareerTabProps {
   annualSalary: number;
   educationTiers: EducationTier[];
   onCompleteEducation: (tierId: string) => void;
+  isBalancedEconomy: boolean;
   burnoutPenaltyActive: boolean;
   flowStateActive: boolean;
 }
@@ -19,6 +20,7 @@ export const CareerTab: React.FC<CareerTabProps> = ({
   annualSalary,
   educationTiers,
   onCompleteEducation,
+  isBalancedEconomy,
   burnoutPenaltyActive,
   flowStateActive,
 }) => {
@@ -98,6 +100,12 @@ export const CareerTab: React.FC<CareerTabProps> = ({
           </div>
         </div>
       </div>
+
+      {isBalancedEconomy && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4 text-xs leading-relaxed text-blue-950">
+          <strong>Как растёт оклад:</strong> ежегодная индексация составляет 40% инфляции, но не меньше 3% и не больше 7%; образование даёт отдельную разовую прибавку 8–20% при завершении курса. Радость меняет фактически получаемую зарплату на −20% при выгорании или +10% при высоком уровне.
+        </div>
+      )}
 
       {/* Education Ladder (Replicating IMG_9094) */}
       <div className="space-y-3">

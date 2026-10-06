@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   GameMode,
   LifeGoal,
@@ -35,10 +35,9 @@ import {
   INITIAL_INSURANCES,
   INITIAL_EDUCATION_TIERS,
   OPTIONAL_EXPENSES_POOL,
-  RANDOM_EVENTS_POOL,
   MACRO_NEWS_POOL,
 } from './data/initialData';
-import { EXPANDED_EVENTS_POOL, pickRichMacroNews } from './data/richEventsPool';
+import { LOCAL_GAMEPLAY_EVENTS, pickRichMacroNews } from './data/richEventsPool';
 import { Header, ActiveTab } from './components/Header';
 import { StatusBar } from './components/StatusBar';
 import { OverviewTab } from './components/Tabs/OverviewTab';
@@ -53,14 +52,67 @@ import { RulesGuideModal } from './components/Modals/RulesGuideModal';
 import { LeaderboardModal } from './components/Modals/LeaderboardModal';
 import { GameOverModal } from './components/Modals/GameOverModal';
 import { GameSetupModal } from './components/Modals/GameSetupModal';
-import { DownloadModal } from './components/Modals/DownloadModal';
 import { OnboardingTourModal } from './components/Modals/OnboardingTourModal';
 import { calculateMandatoryExpensesBreakdown } from './utils/expenses';
 import { requestAiMacroNews, requestAiGameplayEvent } from './services/aiNewsService';
 import { sound } from './utils/audio';
+import { GAME_TRANSLATIONS, getGameTranslationsForYandexLanguage } from './i18n';
+import type { GameLocale } from './i18n';
+import {
+  createYandexCloudSaveQueue,
+  getYandexPlayer,
+  initializeYandexGames,
+  IS_YANDEX_GAMES_BUILD,
+  loadYandexCloudSave,
+  showYandexFullscreenAd,
+} from './platform/yandexGames';
+import type { YandexCloudSaveQueue, YandexGamesSDK } from './platform/yandexGames';
+import {
+  applyCashMovement,
+  calculateAnnualPassiveIncome,
+  calculateAnnualStockDividends,
+  calculateInvestedAssetsValue,
+  calculateNetWorth,
+  combineEventChoiceImpact,
+  evaluateGoalStatus,
+  UNPAID_CREDIT_CARD_GAME_OVER_LIMIT,
+  UNPAID_CREDIT_CARD_GAME_OVER_REASON,
+  evaluateYearEndOutcome,
+  processAnnualBondDefaults,
+  protectEventLossWithEmergencyFund,
+  salaryJoyMultiplier,
+} from './utils/gameRules';
+import {
+  calculateAnnualNetCashFlow,
+  getEducationCatalogForEdition,
+  getReasonableSalaryCeiling,
+  getStandardEducationBonus,
+  getStandardSalaryIndexationRate,
+  STANDARD_BALANCE_VERSION,
+} from './utils/balanceRules';
+import {
+  getBusinessCatalogForEdition,
+  migrateLegacyBusinessPortfolio,
+  processStandardBusinessYear,
+  STANDARD_BUSINESS_MAX_LEVEL,
+  STANDARD_BUSINESS_UPGRADE_PROFIT_FACTOR,
+} from './utils/businessRules';
+import {
+  getEffectiveAnnualRent,
+  getNetAnnualRent,
+  normalizeLegacyRenovatedRent,
+  updateRealEstateForYear,
+} from './utils/realEstateRules';
+import {
+  maxAffordableStockShares,
+  quoteStockTrade,
+  rollStockMarketCatalyst,
+} from './utils/marketRules';
+import { resolveDepositYear } from './utils/depositRules';
 
 const STORAGE_KEY = 'finlife_save_v1';
 const LEADERBOARD_KEY = 'finlife_leaderboard_v1';
+const PREFER_YANDEX_CLOUD_ON_RESTORE_KEY = 'finlife_yandex_cloud_restore_after_account_selection';
 
 export default function App() {
   // Navigation & Modals
@@ -68,12 +120,22 @@ export default function App() {
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isTourOpen, setIsTourOpen] = useState(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
-  const [isDownloadOpen, setIsDownloadOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [isGameOverOpen, setIsGameOverOpen] = useState(false);
   const [isTurnSummaryOpen, setIsTurnSummaryOpen] = useState(false);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [locale, setLocale] = useState<GameLocale>('ru');
+  const [balanceMigrationNotice, setBalanceMigrationNotice] = useState<string | null>(null);
+  const [yandexSdk, setYandexSdk] = useState<YandexGamesSDK | null>(null);
+  const [isSaveHydrated, setIsSaveHydrated] = useState(false);
+  const [isYandexAdShowing, setIsYandexAdShowing] = useState(false);
+  const [isYandexPlatformPaused, setIsYandexPlatformPaused] = useState(false);
+  const yandexGameplayActiveRef = useRef<boolean | null>(null);
+  const yandexCloudSaveQueueRef = useRef<YandexCloudSaveQueue | null>(null);
+  const hasActiveGameRef = useRef(false);
+  const pendingEventChoiceResolverRef = useRef<((choice: EventChoice) => void) | null>(null);
+  const isAdvancingYearRef = useRef(false);
 
   // Player & Game Configuration
   const [playerName, setPlayerName] = useState('Инвестор');
@@ -92,6 +154,7 @@ export default function App() {
   const [isMandatoryExpensesPaid, setIsMandatoryExpensesPaid] = useState(false);
   const [hasCar, setHasCar] = useState(false);
   const [hasApartment, setHasApartment] = useState(false);
+  const [primaryResidenceValue, setPrimaryResidenceValue] = useState(0);
 
   // Background Prefetch & Anti-Repetition
   const [recentEventIds, setRecentEventIds] = useState<string[]>([]);
@@ -114,9 +177,13 @@ export default function App() {
   const [crypto, setCrypto] = useState<CryptoAsset[]>(INITIAL_CRYPTO);
   const [businessAssets, setBusinessAssets] = useState<BusinessOrRealEstate[]>(INITIAL_BUSINESS_AND_REAL_ESTATE);
   const [realEstate, setRealEstate] = useState<RealEstateProperty[]>(INITIAL_REAL_ESTATE);
-  const [businessEmpires, setBusinessEmpires] = useState<BusinessEmpire[]>(INITIAL_BUSINESS_EMPIRES);
+  const [businessEmpires, setBusinessEmpires] = useState<BusinessEmpire[]>(() =>
+    getBusinessCatalogForEdition(INITIAL_BUSINESS_EMPIRES, IS_YANDEX_GAMES_BUILD)
+  );
   const [insurances, setInsurances] = useState<InsurancePolicy[]>(INITIAL_INSURANCES);
-  const [educationTiers, setEducationTiers] = useState<EducationTier[]>(INITIAL_EDUCATION_TIERS);
+  const [educationTiers, setEducationTiers] = useState<EducationTier[]>(() =>
+    getEducationCatalogForEdition(INITIAL_EDUCATION_TIERS, IS_YANDEX_GAMES_BUILD)
+  );
 
   // Banking & Debt
   const [loans, setLoans] = useState<Loan[]>([]);
@@ -149,6 +216,8 @@ export default function App() {
   const [lastTurnReport, setLastTurnReport] = useState<TurnReport | null>(null);
   const [currentEvent, setCurrentEvent] = useState<GameRandomEvent | null>(null);
   const [eventInsuranceSaved, setEventInsuranceSaved] = useState(false);
+  const [eventEmergencyFundSaved, setEventEmergencyFundSaved] = useState(0);
+  const [eventCashDeltaAfterProtection, setEventCashDeltaAfterProtection] = useState(0);
   const [pendingTaxRefund, setPendingTaxRefund] = useState(0);
 
   // Lifetime Stats
@@ -157,7 +226,7 @@ export default function App() {
   const [totalSalaryEarned, setTotalSalaryEarned] = useState(1200000);
   const [history, setHistory] = useState<YearHistoryPoint[]>([
     {
-      year: 1,
+      year: 0,
       netWorth: 350000,
       cash: 350000,
       invested: 0,
@@ -197,28 +266,26 @@ export default function App() {
     [realEstate]
   );
   const businessEmpiresValue = useMemo(
-    () => businessEmpires.filter((b) => b.owned).reduce((acc, b) => acc + b.currentValuation, 0),
+    () =>
+      businessEmpires
+        .filter((business) => business.owned && !business.isIpo)
+        .reduce((acc, business) => acc + business.currentValuation, 0),
     [businessEmpires]
   );
 
   const totalInvested = useMemo(
     () =>
-      stocksValue +
-      bondsValue +
-      depositsValue +
-      cryptoValue +
-      businessValue +
-      realEstateValue +
-      businessEmpiresValue,
-    [
-      stocksValue,
-      bondsValue,
-      depositsValue,
-      cryptoValue,
-      businessValue,
-      realEstateValue,
-      businessEmpiresValue,
-    ]
+      calculateInvestedAssetsValue({
+        stocks,
+        bonds,
+        deposits,
+        crypto,
+        businessAssets,
+        realEstate,
+        businessEmpires,
+        primaryResidenceValue,
+      }),
+    [stocks, bonds, deposits, crypto, businessAssets, realEstate, businessEmpires, primaryResidenceValue]
   );
 
   const debtTotal = useMemo(
@@ -227,9 +294,11 @@ export default function App() {
   );
 
   const netWorth = useMemo(
-    () => Math.max(0, cash + totalInvested - debtTotal),
+    () => calculateNetWorth(cash, totalInvested, debtTotal),
     [cash, totalInvested, debtTotal]
   );
+
+  const effectiveAnnualSalary = Math.round(annualSalary * salaryJoyMultiplier(joy));
 
   const hasBusiness = useMemo(
     () =>
@@ -238,33 +307,19 @@ export default function App() {
     [businessAssets, businessEmpires]
   );
 
-  const passiveIncomeAnnual = useMemo(() => {
-    const stockDivs = stocks.reduce(
-      (acc, s) => acc + s.ownedShares * s.price * s.dividendYield,
-      0
-    );
-    const bondCoupons = bonds.reduce(
-      (acc, b) => acc + b.ownedCount * b.faceValue * b.couponRate,
-      0
-    );
-    const legacyBusinessIncome = businessAssets
-      .filter((a) => a.owned)
-      .reduce((acc, a) => acc + a.cost * a.annualIncomeRate, 0);
-
-    const rentIncome = realEstate.reduce((acc, r) => {
-      const rent = r.isRenovated ? Math.round(r.annualRentIncome * 1.3) : r.annualRentIncome;
-      return acc + Math.max(0, (rent - r.annualMaintenance) * r.ownedCount);
-    }, 0);
-
-    const empireIncome = businessEmpires
-      .filter((b) => b.owned)
-      .reduce((acc, b) => {
-        const divFlow = b.isIpo ? Math.round(b.currentValuation * (b.dividendYield || 0.25)) : 0;
-        return acc + b.annualProfit + divFlow;
-      }, 0);
-
-    return Math.round(stockDivs + bondCoupons + legacyBusinessIncome + rentIncome + empireIncome);
-  }, [stocks, bonds, businessAssets, realEstate, businessEmpires]);
+  const passiveIncomeAnnual = useMemo(
+    () => calculateAnnualPassiveIncome({
+      stocks,
+      bonds,
+      deposits,
+      businessAssets,
+      realEstate,
+      businessEmpires,
+      useBalancedRealEstate: !IS_YANDEX_GAMES_BUILD,
+      useBalancedBusiness: !IS_YANDEX_GAMES_BUILD,
+    }),
+    [stocks, bonds, deposits, businessAssets, realEstate, businessEmpires]
+  );
 
   const emergencyFundMonths = useMemo(() => {
     const monthlyExpenses = mandatoryExpensesCost / 12;
@@ -278,37 +333,40 @@ export default function App() {
       .reduce((acc, a) => acc + a.cost * a.annualIncomeRate, 0);
 
     const currentEmpireIncome = businessEmpires
-      .filter((b) => b.owned)
-      .reduce((acc, b) => acc + b.annualProfit, 0);
+      .filter((business) => business.owned && !business.isIpo)
+      .reduce((acc, business) => acc + business.annualProfit, 0);
 
-    const currentRentIncome = realEstate.reduce((acc, r) => {
-      const rent = r.isRenovated ? Math.round(r.annualRentIncome * 1.3) : r.annualRentIncome;
-      return acc + Math.max(0, (rent - r.annualMaintenance) * r.ownedCount);
-    }, 0);
-
-    const totalRealEstateValuation = realEstate.reduce(
-      (acc, r) => acc + r.ownedCount * r.currentPrice,
+    const currentRentIncome = realEstate.reduce(
+      (acc, property) =>
+        acc + (IS_YANDEX_GAMES_BUILD
+          ? Math.max(0, (property.annualRentIncome - property.annualMaintenance) * property.ownedCount)
+          : getNetAnnualRent(property)),
       0
     );
 
+    const totalRealEstateValuation =
+      primaryResidenceValue +
+      realEstate.reduce((acc, property) => acc + property.ownedCount * property.currentPrice, 0);
+
     return calculateMandatoryExpensesBreakdown({
-      annualSalary,
+      annualSalary: effectiveAnnualSalary,
       businessIncome: currentLegacyBusinessIncome + currentEmpireIncome,
       rentIncome: currentRentIncome,
       baseLivingFloor: 160000,
       hasApartment,
       hasCar,
-      debitCardActive: debitCard.active,
+      debitCardActive: IS_YANDEX_GAMES_BUILD ? debitCard.active : false,
       inflationMultiplier: Math.pow(1 + inflationRate, Math.min(12, year - 1)),
       investmentPropertiesCount: realEstate.reduce((acc, r) => acc + r.ownedCount, 0),
       propertyTotalValuation: totalRealEstateValuation,
     });
   }, [
-    annualSalary,
+    effectiveAnnualSalary,
     businessAssets,
     businessEmpires,
     realEstate,
     hasApartment,
+    primaryResidenceValue,
     hasCar,
     debitCard.active,
     inflationRate,
@@ -319,101 +377,460 @@ export default function App() {
     setMandatoryExpensesCost(mandatoryBreakdown.total);
   }, [mandatoryBreakdown.total]);
 
-  // Load Saved Game & Leaderboard
+  // Restore local progress first, then prefer a newer Yandex cloud snapshot.
   useEffect(() => {
-    try {
-      const savedLb = localStorage.getItem(LEADERBOARD_KEY);
-      if (savedLb) {
-        setLeaderboard(JSON.parse(savedLb));
-      }
+    let cancelled = false;
 
-      const savedGame = localStorage.getItem(STORAGE_KEY);
-      if (savedGame) {
-        const data = JSON.parse(savedGame);
-        setPlayerName(data.playerName || 'Инвестор');
-        setGameMode(data.gameMode || 'GOAL');
-        setGoal(data.goal || INITIAL_LIFE_GOALS[1]);
-        setCharacter(data.character || INITIAL_CHARACTERS[0]);
-        setYear(data.year || 1);
-        let loadedCash = data.cash ?? 1600000;
-        const loadedMandatory = data.mandatoryExpensesCost || 420000;
-        if (data.year === 1 && !data.isMandatoryExpensesPaid && loadedCash < loadedMandatory) {
-          loadedCash += data.annualSalary || 1200000;
+    const restoreSave = async () => {
+      let platformSdk: YandexGamesSDK | null = null;
+      try {
+        const savedLb = localStorage.getItem(LEADERBOARD_KEY);
+        if (savedLb) {
+          setLeaderboard(JSON.parse(savedLb));
         }
-        setCash(loadedCash);
-        setJoy(data.joy ?? 75);
-        setAnnualSalary(data.annualSalary || 1200000);
-        setMandatoryExpensesCost(loadedMandatory);
-        setIsMandatoryExpensesPaid(data.isMandatoryExpensesPaid || false);
-        setHasCar(Boolean(data.hasCar));
-        setHasApartment(Boolean(data.hasApartment));
-        setRecentEventIds(data.recentEventIds || []);
-        setInflationRate(data.inflationRate || 0.08);
-        setKeyRate(data.keyRate || 0.12);
-        setCurrentNews(data.currentNews || MACRO_NEWS_POOL[0]);
-        setNewsHistory(data.newsHistory || []);
 
-        const savedStocks = data.stocks || [];
-        const mergedStocks = INITIAL_STOCKS.map((initS) => {
-          const found = savedStocks.find((s: StockAsset) => s.id === initS.id);
-          return found || initS;
-        });
-        setStocks(mergedStocks);
-        setBonds(data.bonds || INITIAL_BONDS);
-        setDeposits(data.deposits || []);
-        setCrypto(data.crypto || INITIAL_CRYPTO);
-        setBusinessAssets(data.businessAssets || INITIAL_BUSINESS_AND_REAL_ESTATE);
-        setRealEstate(data.realEstate || INITIAL_REAL_ESTATE);
-        setBusinessEmpires(data.businessEmpires || INITIAL_BUSINESS_EMPIRES);
-        setInsurances(data.insurances || INITIAL_INSURANCES);
-        setEducationTiers(data.educationTiers || INITIAL_EDUCATION_TIERS);
-        setLoans(data.loans || []);
-        setCreditCard(
-          data.creditCard || {
+        let data: Record<string, any> | null = null;
+        const savedGame = localStorage.getItem(STORAGE_KEY);
+        if (savedGame) {
+          try {
+            data = JSON.parse(savedGame) as Record<string, any>;
+          } catch {
+            localStorage.removeItem(STORAGE_KEY);
+          }
+        }
+
+        if (IS_YANDEX_GAMES_BUILD) {
+          let preferCloudSave = false;
+          try {
+            preferCloudSave =
+              sessionStorage.getItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY) === 'true';
+          } catch {
+            // Session storage may be unavailable in restricted browser contexts.
+          }
+
+          platformSdk = await initializeYandexGames();
+          if (cancelled) return;
+          if (platformSdk) {
+            const localizedGame = getGameTranslationsForYandexLanguage(
+              platformSdk.environment?.i18n?.lang
+            );
+            document.documentElement.lang = localizedGame.locale;
+            setLocale(localizedGame.locale);
+            setYandexSdk(platformSdk);
+            const player = await getYandexPlayer(platformSdk);
+            if (cancelled) return;
+            if (player) {
+              yandexCloudSaveQueueRef.current = createYandexCloudSaveQueue(player);
+              const cloudSave = await loadYandexCloudSave(player);
+              if (cancelled) return;
+              const localSavedAt = Number(data?._savedAt) || 0;
+              if (cloudSave && (preferCloudSave || cloudSave.savedAt > localSavedAt)) {
+                data = cloudSave.payload;
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+              }
+              try {
+                sessionStorage.removeItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY);
+              } catch {
+                // Ignore restricted session storage.
+              }
+            }
+          }
+        }
+
+        if (cancelled) return;
+        if (data) {
+          hasActiveGameRef.current = true;
+          if (Array.isArray(data.leaderboard)) setLeaderboard(data.leaderboard);
+          setPlayerName(data.playerName || 'Инвестор');
+          const loadedMode: GameMode = data.gameMode || 'GOAL';
+          const storedYear = Number(data.year) || 1;
+          const legacySave = !Object.hasOwn(data, 'primaryResidenceValue');
+          const legacyClassicFinished =
+            legacySave && loadedMode === '10_YEARS' && storedYear > 10 && !Object.hasOwn(data, 'isGameOverOpen');
+          const loadedCardDebt = Number(data.creditCard?.usedAmount) || 0;
+          const loadedCardDebtReachedGameOver = loadedCardDebt >= UNPAID_CREDIT_CARD_GAME_OVER_LIMIT;
+          const loadedGoal: LifeGoal =
+            data.goal || (loadedMode === '10_YEARS' ? INITIAL_LIFE_GOALS[0] : INITIAL_LIFE_GOALS[1]);
+          const loadedCharacter: CharacterPreset = data.character || INITIAL_CHARACTERS[0];
+          const loadedYear = legacyClassicFinished ? 10 : storedYear;
+          const migratingStandardBalance =
+            !IS_YANDEX_GAMES_BUILD && Number(data._balanceVersion || 0) < STANDARD_BALANCE_VERSION;
+          const savedEducationTiers: EducationTier[] = Array.isArray(data.educationTiers)
+            ? data.educationTiers
+            : INITIAL_EDUCATION_TIERS;
+          const loadedEducationTiers = getEducationCatalogForEdition(
+            savedEducationTiers,
+            IS_YANDEX_GAMES_BUILD
+          );
+          const savedAnnualSalary = Number(data.annualSalary) || 1200000;
+          const salaryCeiling = getReasonableSalaryCeiling({
+            initialSalary: loadedCharacter.initialSalary || INITIAL_CHARACTERS[0].initialSalary,
+            year: loadedYear,
+            educationTiers: loadedEducationTiers,
+          });
+          const loadedAnnualSalary = migratingStandardBalance
+            ? Math.min(savedAnnualSalary, salaryCeiling)
+            : savedAnnualSalary;
+          setGameMode(loadedMode);
+          setGoal(loadedGoal);
+          setCharacter(loadedCharacter);
+          setYear(loadedYear);
+          setIsGameOverOpen(
+            Boolean(data.isGameOverOpen) || legacyClassicFinished || loadedCardDebtReachedGameOver
+          );
+          setIsVictorious(loadedCardDebtReachedGameOver ? false : Boolean(data.isVictorious));
+          setFailReason(
+            loadedCardDebtReachedGameOver ? UNPAID_CREDIT_CARD_GAME_OVER_REASON : data.failReason
+          );
+          let loadedCash = data.cash ?? 1600000;
+          const loadedMandatory = data.mandatoryExpensesCost || 420000;
+          if (data.year === 1 && !data.isMandatoryExpensesPaid && loadedCash < loadedMandatory) {
+            loadedCash += loadedAnnualSalary;
+          }
+          setCash(loadedCash);
+          setJoy(data.joy ?? 75);
+          setAnnualSalary(loadedAnnualSalary);
+          setMandatoryExpensesCost(loadedMandatory);
+          setIsMandatoryExpensesPaid(data.isMandatoryExpensesPaid || false);
+          setHasCar(Boolean(data.hasCar));
+          const loadedHasApartment = Boolean(data.hasApartment);
+          setHasApartment(loadedHasApartment);
+          // Older saves stored only the ownership flag; preserve their purchased home value.
+          setPrimaryResidenceValue(
+            Number.isFinite(data.primaryResidenceValue)
+              ? Math.max(0, data.primaryResidenceValue)
+              : loadedHasApartment
+              ? 7200000
+              : 0
+          );
+          setRecentEventIds(data.recentEventIds || []);
+          setInflationRate(data.inflationRate || 0.08);
+          setKeyRate(data.keyRate || 0.12);
+          setCurrentNews(data.currentNews || MACRO_NEWS_POOL[0]);
+          setActiveCrisis(data.activeCrisis || null);
+          setNewsHistory(data.newsHistory || []);
+          setPendingTaxRefund(data.pendingTaxRefund || 0);
+
+          const savedStocks: StockAsset[] = data.stocks || [];
+          const initialStockIds = new Set(INITIAL_STOCKS.map((stock) => stock.id));
+          const mergedStocks = [
+            ...INITIAL_STOCKS.map((initialStock) => {
+              const savedStock = savedStocks.find((stock) => stock.id === initialStock.id);
+              return savedStock
+                ? {
+                    ...initialStock,
+                    ...savedStock,
+                    heldSharesLastYear: savedStock.heldSharesLastYear ?? savedStock.ownedShares,
+                  }
+                : initialStock;
+            }),
+            ...savedStocks
+              .filter((stock) => !initialStockIds.has(stock.id))
+              .map((stock) => ({
+                ...stock,
+                heldSharesLastYear: stock.heldSharesLastYear ?? stock.ownedShares,
+              })),
+          ];
+          const loadedBonds: BondAsset[] = data.bonds || INITIAL_BONDS;
+          const loadedDeposits: BankDeposit[] = data.deposits || [];
+          const loadedCrypto: CryptoAsset[] = data.crypto || INITIAL_CRYPTO;
+          const loadedBusinessAssets: BusinessOrRealEstate[] =
+            data.businessAssets || INITIAL_BUSINESS_AND_REAL_ESTATE;
+          let loadedRealEstate: RealEstateProperty[] = Array.isArray(data.realEstate)
+            ? data.realEstate
+            : INITIAL_REAL_ESTATE;
+          const savedBusinessEmpires: BusinessEmpire[] = Array.isArray(data.businessEmpires)
+            ? data.businessEmpires
+            : getBusinessCatalogForEdition(INITIAL_BUSINESS_EMPIRES, IS_YANDEX_GAMES_BUILD);
+          let loadedBusinessEmpires = savedBusinessEmpires;
+          let loadedStocks = mergedStocks;
+          let normalizedRenovatedPropertyCount = 0;
+          let retiredIpoCount = 0;
+
+          if (migratingStandardBalance) {
+            normalizedRenovatedPropertyCount = loadedRealEstate.filter((property) => property.isRenovated).length;
+            loadedRealEstate = loadedRealEstate.map(normalizeLegacyRenovatedRent);
+            const migratedPortfolio = migrateLegacyBusinessPortfolio(
+              savedBusinessEmpires,
+              mergedStocks,
+              getBusinessCatalogForEdition(INITIAL_BUSINESS_EMPIRES, false)
+            );
+            loadedBusinessEmpires = migratedPortfolio.businesses;
+            loadedStocks = migratedPortfolio.stocks;
+            retiredIpoCount = migratedPortfolio.retiredIpoCount;
+
+            const migrationNotes = ['Сохранение переведено на баланс обычной версии; прогресс и денежные остатки сохранены.'];
+            if (loadedAnnualSalary < savedAnnualSalary) {
+              migrationNotes.push(
+                `Оклад нормализован с ${savedAnnualSalary.toLocaleString('ru-RU')} до ${loadedAnnualSalary.toLocaleString('ru-RU')} ₽ в год: прежняя формула позволяла сложный рост до 14% ежегодно.`
+              );
+            }
+            if (retiredIpoCount > 0) {
+              migrationNotes.push(
+                `${retiredIpoCount} публичных бизнес-долей преобразованы в частные компании по текущей стоимости пакета.`
+              );
+            }
+            if (normalizedRenovatedPropertyCount > 0) {
+              migrationNotes.push(
+                `Доходность ${normalizedRenovatedPropertyCount} отремонтированных объектов приведена к единой формуле; аренда ограничена долей от рыночной цены.`
+              );
+            }
+            setBalanceMigrationNotice(migrationNotes.join(' '));
+          }
+
+          setStocks(loadedStocks);
+          setBonds(loadedBonds);
+          setDeposits(loadedDeposits);
+          setCrypto(loadedCrypto);
+          setBusinessAssets(loadedBusinessAssets);
+          setRealEstate(loadedRealEstate);
+          setBusinessEmpires(loadedBusinessEmpires);
+          setInsurances(data.insurances || INITIAL_INSURANCES);
+          setEducationTiers(loadedEducationTiers);
+          const loadedCreditCard: CreditCard = data.creditCard || {
             limit: 600000,
             usedAmount: 0,
             gracePeriodYearsRemaining: 1,
             interestRate: 0.28,
             penaltyRate: 0.1,
             isOverdue: false,
-          }
-        );
-        setDebitCard(
-          data.debitCard || {
+          };
+          const loadedLoans: Loan[] = data.loans || [];
+          setCreditCard(loadedCreditCard);
+          setLoans(loadedLoans);
+          const loadedDebitCard: DebitCard = data.debitCard || {
             active: false,
             name: 'Кэшбэк Карта 3%',
             cashbackRate: 0.03,
             annualFee: 1500,
             benefitDescription: '',
-          }
-        );
-        setOptionalExpenses(data.optionalExpenses || [OPTIONAL_EXPENSES_POOL[0], OPTIONAL_EXPENSES_POOL[1]]);
-        setAcceptedOptionalIds(data.acceptedOptionalIds || []);
-        setDeclinedOptionalIds(data.declinedOptionalIds || []);
-        setTotalDividendsEarned(data.totalDividendsEarned || 0);
-        setTotalCouponsEarned(data.totalCouponsEarned || 0);
-        setTotalSalaryEarned(data.totalSalaryEarned || 1200000);
-        setHistory(data.history || [{ year: 1, netWorth: 350000, cash: 350000, invested: 0, joy: 75, passiveIncome: 0 }]);
-      } else {
-        setIsSetupOpen(true);
-      }
+          };
+          setDebitCard(
+            migratingStandardBalance && loadedDebitCard.active && loadedDebitCard.lastFeePaidYear === undefined
+              ? { ...loadedDebitCard, lastFeePaidYear: loadedYear }
+              : loadedDebitCard
+          );
+          setOptionalExpenses(data.optionalExpenses || [OPTIONAL_EXPENSES_POOL[0], OPTIONAL_EXPENSES_POOL[1]]);
+          setAcceptedOptionalIds(data.acceptedOptionalIds || []);
+          setDeclinedOptionalIds(data.declinedOptionalIds || []);
+          setTotalDividendsEarned(data.totalDividendsEarned || 0);
+          setTotalCouponsEarned(data.totalCouponsEarned || 0);
+          setTotalSalaryEarned(data.totalSalaryEarned || 1200000);
+          const loadedHistory: YearHistoryPoint[] = data.history || [
+            { year: 0, netWorth: 350000, cash: 350000, invested: 0, joy: 75, passiveIncome: 0 },
+          ];
+          setHistory(
+            legacySave
+              ? loadedHistory.map((point) => ({ ...point, year: Math.max(0, point.year - 1) }))
+              : loadedHistory
+          );
 
-      const tourDone = localStorage.getItem('finlife_tour_completed');
-      if (!tourDone) {
-        setIsTourOpen(true);
+          if (legacyClassicFinished) {
+            const migratedResidenceValue = Number.isFinite(data.primaryResidenceValue)
+              ? Math.max(0, data.primaryResidenceValue)
+              : loadedHasApartment
+              ? 7200000
+              : 0;
+            const loadedDebt =
+              loadedLoans.reduce((sum, loan) => sum + loan.remainingDebt, 0) + loadedCreditCard.usedAmount;
+            const finalCapital = calculateNetWorth(
+              loadedCash,
+              calculateInvestedAssetsValue({
+                stocks: loadedStocks,
+                bonds: loadedBonds,
+                deposits: loadedDeposits,
+                crypto: loadedCrypto,
+                businessAssets: loadedBusinessAssets,
+                realEstate: loadedRealEstate,
+                businessEmpires: loadedBusinessEmpires,
+                primaryResidenceValue: migratedResidenceValue,
+              }),
+              loadedDebt
+            );
+            const finalPassiveIncome = calculateAnnualPassiveIncome({
+              stocks: loadedStocks,
+              bonds: loadedBonds,
+              deposits: loadedDeposits,
+              businessAssets: loadedBusinessAssets,
+              realEstate: loadedRealEstate,
+              businessEmpires: loadedBusinessEmpires,
+              useBalancedRealEstate: !IS_YANDEX_GAMES_BUILD,
+              useBalancedBusiness: !IS_YANDEX_GAMES_BUILD,
+            });
+            const finalStatus = evaluateGoalStatus({
+              mode: loadedMode,
+              goal: loadedGoal,
+              netWorth: finalCapital,
+              cash: loadedCash,
+              joy: data.joy ?? 75,
+              hasApartment: loadedHasApartment,
+              primaryResidenceValue: migratedResidenceValue,
+              hasBusiness:
+                loadedBusinessAssets.some((asset) => asset.type === 'BUSINESS' && asset.owned) ||
+                loadedBusinessEmpires.some((business) => business.owned),
+              passiveIncome: finalPassiveIncome,
+              creditCardDebt: loadedCreditCard.usedAmount,
+            });
+            setIsVictorious(finalStatus.canClaimVictory);
+            setFailReason(
+              finalStatus.canClaimVictory
+                ? undefined
+                : 'Итоговые условия сохранённой классической партии не выполнены.'
+            );
+          }
+
+          if (loadedCardDebtReachedGameOver) {
+            setIsGameOverOpen(true);
+            setIsVictorious(false);
+            setFailReason(UNPAID_CREDIT_CARD_GAME_OVER_REASON);
+          }
+        } else {
+          setIsSetupOpen(true);
+        }
+
+        const tourDone = localStorage.getItem('finlife_tour_completed');
+        if (!tourDone) {
+          setIsTourOpen(true);
+        }
+      } catch (error) {
+        console.warn('Game save restoration failed; starting with local defaults:', error);
+        setIsSetupOpen(true);
+      } finally {
+        if (!cancelled) setIsSaveHydrated(true);
       }
-    } catch {
-      setIsSetupOpen(true);
-    }
+    };
+
+    void restoreSave();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD) return;
+
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener('contextmenu', preventContextMenu);
+    return () => document.removeEventListener('contextmenu', preventContextMenu);
+  }, []);
+
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !yandexSdk || !isSaveHydrated) return;
+    yandexSdk.features?.LoadingAPI?.ready?.();
+  }, [yandexSdk, isSaveHydrated]);
+
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !yandexSdk) return;
+
+    const setGameplayActive = (active: boolean) => {
+      if (yandexGameplayActiveRef.current === active) return;
+      yandexGameplayActiveRef.current = active;
+      if (active) {
+        yandexSdk.features?.GameplayAPI?.start?.();
+      } else {
+        yandexSdk.features?.GameplayAPI?.stop?.();
+        sound.suspend();
+      }
+    };
+
+    const updateGameplayState = () => {
+      const canPlay =
+        isSaveHydrated &&
+        !document.hidden &&
+        !isSetupOpen &&
+        !isGameOverOpen &&
+        !isTurnSummaryOpen &&
+        !isYandexAdShowing &&
+        !isYandexPlatformPaused;
+      setGameplayActive(canPlay);
+    };
+    const handleBlur = () => {
+      sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
+      setGameplayActive(false);
+    };
+    const handleFocus = () => {
+      setIsYandexPlatformPaused(false);
+      updateGameplayState();
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        void yandexCloudSaveQueueRef.current?.flush(true);
+      } else {
+        setIsYandexPlatformPaused(false);
+      }
+      updateGameplayState();
+    };
+    const handleSdkPause = () => {
+      sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
+      setIsYandexPlatformPaused(true);
+    };
+    const handleSdkResume = () => setIsYandexPlatformPaused(false);
+    const handleAccountSelectionOpened = () => {
+      sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
+      setIsYandexPlatformPaused(true);
+    };
+    const handleAccountSelectionClosed = () => {
+      try {
+        sessionStorage.setItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY, 'true');
+      } catch {
+        // The reload still lets the SDK create a fresh Player object.
+      }
+      window.location.reload();
+    };
+
+    const unsubscribePause = yandexSdk.on?.('game_api_pause', handleSdkPause);
+    const unsubscribeResume = yandexSdk.on?.('game_api_resume', handleSdkResume);
+    const accountSelectionOpenedEvent = yandexSdk.EVENTS?.ACCOUNT_SELECTION_DIALOG_OPENED;
+    const accountSelectionClosedEvent = yandexSdk.EVENTS?.ACCOUNT_SELECTION_DIALOG_CLOSED;
+    const unsubscribeAccountSelectionOpened = accountSelectionOpenedEvent
+      ? yandexSdk.on?.(accountSelectionOpenedEvent, handleAccountSelectionOpened)
+      : undefined;
+    const unsubscribeAccountSelectionClosed = accountSelectionClosedEvent
+      ? yandexSdk.on?.(accountSelectionClosedEvent, handleAccountSelectionClosed)
+      : undefined;
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    updateGameplayState();
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+      if (typeof unsubscribePause === 'function') unsubscribePause();
+      else yandexSdk.off?.('game_api_pause', handleSdkPause);
+      if (typeof unsubscribeResume === 'function') unsubscribeResume();
+      else yandexSdk.off?.('game_api_resume', handleSdkResume);
+      if (accountSelectionOpenedEvent) {
+        if (typeof unsubscribeAccountSelectionOpened === 'function') unsubscribeAccountSelectionOpened();
+        else yandexSdk.off?.(accountSelectionOpenedEvent, handleAccountSelectionOpened);
+      }
+      if (accountSelectionClosedEvent) {
+        if (typeof unsubscribeAccountSelectionClosed === 'function') unsubscribeAccountSelectionClosed();
+        else yandexSdk.off?.(accountSelectionClosedEvent, handleAccountSelectionClosed);
+      }
+      setGameplayActive(false);
+    };
+  }, [yandexSdk, isSaveHydrated, isSetupOpen, isGameOverOpen, isTurnSummaryOpen, isYandexAdShowing, isYandexPlatformPaused]);
 
   // Save Game on State Change
   const saveCurrentGame = useCallback(() => {
+    if (!isSaveHydrated || !hasActiveGameRef.current) return;
+
     try {
       const data = {
+        _savedAt: Date.now(),
+        ...(!IS_YANDEX_GAMES_BUILD ? { _balanceVersion: STANDARD_BALANCE_VERSION } : {}),
         playerName,
         gameMode,
         goal,
+        isGameOverOpen,
+        isVictorious,
+        failReason,
         character,
         year,
         cash,
@@ -423,11 +840,14 @@ export default function App() {
         isMandatoryExpensesPaid,
         hasCar,
         hasApartment,
+        primaryResidenceValue,
         recentEventIds,
         inflationRate,
         keyRate,
         currentNews,
+        activeCrisis,
         newsHistory,
+        pendingTaxRefund,
         stocks,
         bonds,
         deposits,
@@ -447,15 +867,22 @@ export default function App() {
         totalCouponsEarned,
         totalSalaryEarned,
         history,
+        leaderboard,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      if (!isYandexPlatformPaused) yandexCloudSaveQueueRef.current?.schedule(data);
     } catch {
-      // ignore
+      // Keep the browser save as the fallback if cloud sync is unavailable.
     }
   }, [
+    isSaveHydrated,
+    isYandexPlatformPaused,
     playerName,
     gameMode,
     goal,
+    isGameOverOpen,
+    isVictorious,
+    failReason,
     character,
     year,
     cash,
@@ -465,11 +892,14 @@ export default function App() {
     isMandatoryExpensesPaid,
     hasCar,
     hasApartment,
+    primaryResidenceValue,
     recentEventIds,
     inflationRate,
     keyRate,
     currentNews,
+    activeCrisis,
     newsHistory,
+    pendingTaxRefund,
     stocks,
     bonds,
     deposits,
@@ -489,14 +919,35 @@ export default function App() {
     totalCouponsEarned,
     totalSalaryEarned,
     history,
+    leaderboard,
   ]);
 
   useEffect(() => {
     saveCurrentGame();
   }, [saveCurrentGame]);
 
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !isSaveHydrated) return;
+
+    const flushCloudSave = () => {
+      void yandexCloudSaveQueueRef.current?.flush(true);
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) flushCloudSave();
+    };
+
+    window.addEventListener('pagehide', flushCloudSave);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushCloudSave);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isSaveHydrated]);
+
   // Background Prefetch for Next Turn
   useEffect(() => {
+    if (!isSaveHydrated) return;
+
     let cancelled = false;
     const prefetch = async () => {
       try {
@@ -541,7 +992,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [year, hasCar, hasApartment, hasBusiness, character.name, character.role, activeCrisis?.headline]);
+  }, [isSaveHydrated, year, hasCar, hasApartment, hasBusiness, character.name, character.role, activeCrisis?.headline]);
 
   // Start New Game Handler
   const handleStartGame = (params: {
@@ -550,6 +1001,7 @@ export default function App() {
     mode: GameMode;
     goal: LifeGoal;
   }) => {
+    hasActiveGameRef.current = true;
     setPlayerName(params.playerName);
     setCharacter(params.character);
     setGameMode(params.mode);
@@ -574,6 +1026,7 @@ export default function App() {
     setIsMandatoryExpensesPaid(false);
     setHasCar(false);
     setHasApartment(false);
+    setPrimaryResidenceValue(0);
     setRecentEventIds([]);
     setPrefetchedEvent(null);
     setPrefetchedNews(null);
@@ -584,9 +1037,13 @@ export default function App() {
     setCrypto(INITIAL_CRYPTO.map((c) => ({ ...c, ownedAmount: 0 })));
     setBusinessAssets(INITIAL_BUSINESS_AND_REAL_ESTATE.map((b) => ({ ...b, owned: false })));
     setRealEstate(INITIAL_REAL_ESTATE.map((r) => ({ ...r, ownedCount: 0, isRenovated: false })));
-    setBusinessEmpires(INITIAL_BUSINESS_EMPIRES.map((b) => ({ ...b, owned: false, level: 0, isIpo: false })));
+    setBusinessEmpires(getBusinessCatalogForEdition(INITIAL_BUSINESS_EMPIRES, IS_YANDEX_GAMES_BUILD));
     setInsurances(INITIAL_INSURANCES.map((i) => ({ ...i, active: false })));
-    setEducationTiers(INITIAL_EDUCATION_TIERS.map((e) => ({ ...e, completed: false, inProgress: false, progressYears: 0 })));
+    setEducationTiers(
+      getEducationCatalogForEdition(INITIAL_EDUCATION_TIERS, IS_YANDEX_GAMES_BUILD)
+        .map((education) => ({ ...education, completed: false, inProgress: false, progressYears: 0 }))
+    );
+    setBalanceMigrationNotice(null);
     setLoans([]);
     setCreditCard({
       limit: Math.round(initialSalary * 0.5),
@@ -622,7 +1079,7 @@ export default function App() {
 
     setHistory([
       {
-        year: 1,
+        year: 0,
         netWorth: params.character.initialCash,
         cash: params.character.initialCash,
         invested: 0,
@@ -631,8 +1088,23 @@ export default function App() {
       },
     ]);
 
+    setActiveTab('overview');
+    setIsRulesOpen(false);
+    setIsTourOpen(false);
+    setIsLeaderboardOpen(false);
     setIsSetupOpen(false);
     setIsGameOverOpen(false);
+    setIsTurnSummaryOpen(false);
+    setIsEventModalOpen(false);
+    setIsVictorious(false);
+    setFailReason(undefined);
+    setLastTurnReport(null);
+    setCurrentEvent(null);
+    setEventInsuranceSaved(false);
+    setEventEmergencyFundSaved(0);
+    setEventCashDeltaAfterProtection(0);
+    setPendingTaxRefund(0);
+    setActiveCrisis(null);
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -668,6 +1140,7 @@ export default function App() {
     }
     if (expense.isOneTimeAssetPurchase === 'APARTMENT' || expense.id === 'opt_own_apartment') {
       setHasApartment(true);
+      setPrimaryResidenceValue(expense.cost);
     }
 
     if (expense.permanentAnnualCostDelta) {
@@ -707,9 +1180,21 @@ export default function App() {
   const handleBuyStock = (stockId: string, count: number) => {
     const stock = stocks.find((s) => s.id === stockId);
     if (!stock) return;
+
+    if (!IS_YANDEX_GAMES_BUILD) {
+      const quote = quoteStockTrade(stock, count, 'BUY');
+      if (quote.shares <= 0 || cash < quote.totalValue) return;
+      setCash((prev) => prev - quote.totalValue);
+      setStocks((prev) =>
+        prev.map((s) => s.id === stockId
+          ? { ...s, price: quote.nextMarketPrice, ownedShares: s.ownedShares + quote.shares }
+          : s)
+      );
+      return;
+    }
+
     const cost = stock.price * count;
     if (cash < cost) return;
-
     setCash((prev) => prev - cost);
     setStocks((prev) =>
       prev.map((s) => (s.id === stockId ? { ...s, ownedShares: s.ownedShares + count } : s))
@@ -719,8 +1204,20 @@ export default function App() {
   const handleSellStock = (stockId: string, count: number) => {
     const stock = stocks.find((s) => s.id === stockId);
     if (!stock || stock.ownedShares < count) return;
-    const revenue = stock.price * count;
 
+    if (!IS_YANDEX_GAMES_BUILD) {
+      const quote = quoteStockTrade(stock, count, 'SELL');
+      if (quote.shares <= 0) return;
+      setCash((prev) => prev + quote.totalValue);
+      setStocks((prev) =>
+        prev.map((s) => s.id === stockId
+          ? { ...s, price: quote.nextMarketPrice, ownedShares: s.ownedShares - quote.shares }
+          : s)
+      );
+      return;
+    }
+
+    const revenue = stock.price * count;
     setCash((prev) => prev + revenue);
     setStocks((prev) =>
       prev.map((s) => (s.id === stockId ? { ...s, ownedShares: s.ownedShares - count } : s))
@@ -730,7 +1227,7 @@ export default function App() {
   // Buy / Sell Bonds
   const handleBuyBond = (bondId: string, count: number) => {
     const bond = bonds.find((b) => b.id === bondId);
-    if (!bond) return;
+    if (!bond || bond.isDefaulted) return;
     const cost = bond.faceValue * count;
     if (cash < cost) return;
 
@@ -819,9 +1316,6 @@ export default function App() {
     setBusinessAssets((prev) =>
       prev.map((a) => (a.id === assetId ? { ...a, owned: true } : a))
     );
-    if (asset.type === 'REAL_ESTATE') {
-      setHasApartment(true);
-    }
     setJoy((prev) => Math.min(100, prev + 15));
   };
 
@@ -835,9 +1329,6 @@ export default function App() {
       prev.map((p) => (p.id === propertyId ? { ...p, ownedCount: p.ownedCount + 1 } : p))
     );
 
-    if (['STUDIO', 'APARTMENT', 'BUSINESS_CLASS', 'PREMIUM'].includes(prop.category)) {
-      setHasApartment(true);
-    }
     setJoy((prev) => Math.min(100, prev + 12));
   };
 
@@ -862,7 +1353,9 @@ export default function App() {
           ? {
               ...p,
               isRenovated: true,
-              annualRentIncome: Math.round(p.annualRentIncome * 1.3),
+              annualRentIncome: IS_YANDEX_GAMES_BUILD
+                ? Math.round(p.annualRentIncome * 1.3)
+                : p.annualRentIncome,
               currentPrice: Math.round(p.currentPrice * 1.15),
             }
           : p
@@ -893,16 +1386,22 @@ export default function App() {
 
   const handleUpgradeBusinessEmpire = (bizId: string) => {
     const biz = businessEmpires.find((b) => b.id === bizId);
-    if (!biz || !biz.owned || biz.level >= biz.maxLevel || cash < biz.upgradeCost) return;
+    const maximumLevel = IS_YANDEX_GAMES_BUILD
+      ? biz?.maxLevel ?? STANDARD_BUSINESS_MAX_LEVEL
+      : Math.min(biz?.maxLevel ?? STANDARD_BUSINESS_MAX_LEVEL, STANDARD_BUSINESS_MAX_LEVEL);
+    if (!biz || !biz.owned || biz.level >= maximumLevel || cash < biz.upgradeCost) return;
 
     const nextLevel = biz.level + 1;
-    const isNowIpo = nextLevel >= biz.maxLevel;
+    const isNowIpo = IS_YANDEX_GAMES_BUILD && nextLevel >= biz.maxLevel;
+    const isFinalPrivateLevel = !IS_YANDEX_GAMES_BUILD && nextLevel >= maximumLevel;
 
     setCash((prev) => prev - biz.upgradeCost);
 
     const nextValuation = Math.round(biz.currentValuation * 2.2);
-    const nextProfit = Math.round(biz.annualProfit * 2.1);
-    const nextUpgradeCost = isNowIpo ? 0 : Math.round(biz.upgradeCost * 2.3);
+    const nextProfit = Math.round(
+      biz.annualProfit * (IS_YANDEX_GAMES_BUILD ? 2.1 : STANDARD_BUSINESS_UPGRADE_PROFIT_FACTOR)
+    );
+    const nextUpgradeCost = isNowIpo || isFinalPrivateLevel ? 0 : Math.round(biz.upgradeCost * 2.3);
 
     let ipoWindfall = 0;
     if (isNowIpo) {
@@ -959,9 +1458,11 @@ export default function App() {
               currentValuation: nextValuation,
               annualProfit: nextProfit,
               upgradeCost: nextUpgradeCost,
-              isIpo: isNowIpo || b.isIpo,
-              ipoCapitalRaised: (b.ipoCapitalRaised || 0) + ipoWindfall,
-              stockAssetId: `stock_${biz.id}`,
+              isIpo: IS_YANDEX_GAMES_BUILD ? isNowIpo || b.isIpo : false,
+              ipoCapitalRaised: IS_YANDEX_GAMES_BUILD
+                ? (b.ipoCapitalRaised || 0) + ipoWindfall
+                : undefined,
+              stockAssetId: IS_YANDEX_GAMES_BUILD ? `stock_${biz.id}` : undefined,
             }
           : b
       )
@@ -1073,570 +1574,756 @@ export default function App() {
 
   // Toggle Debit Card
   const handleToggleDebitCard = () => {
-    if (!debitCard.active && cash >= debitCard.annualFee) {
-      setCash((prev) => prev - debitCard.annualFee);
-      setDebitCard((prev) => ({ ...prev, active: true }));
-    } else if (debitCard.active) {
+    if (!debitCard.active) {
+      const shouldChargeActivationFee = IS_YANDEX_GAMES_BUILD || debitCard.lastFeePaidYear !== year;
+      const feeToCharge = shouldChargeActivationFee ? debitCard.annualFee : 0;
+      if (cash < feeToCharge) return;
+      if (feeToCharge > 0) setCash((prev) => prev - feeToCharge);
+      setDebitCard((prev) => ({
+        ...prev,
+        active: true,
+        ...(!IS_YANDEX_GAMES_BUILD ? { lastFeePaidYear: year } : {}),
+      }));
+    } else {
       setDebitCard((prev) => ({ ...prev, active: false }));
     }
   };
 
   // Advance Year Core Engine
   const handleAdvanceYear = async () => {
-    if (!isMandatoryExpensesPaid) return;
+    if (!isMandatoryExpensesPaid || isAdvancingYearRef.current) return;
+    isAdvancingYearRef.current = true;
 
-    // 1. Dividends & Coupons & Real Estate Rent & Business Empire Profits
-    let earnedDividends = 0;
-    stocks.forEach((s) => {
-      earnedDividends += Math.round(s.ownedShares * s.price * s.dividendYield);
-    });
-
-    let earnedCoupons = 0;
-    bonds.forEach((b) => {
-      earnedCoupons += Math.round(b.ownedCount * b.faceValue * b.couponRate);
-    });
-
-    let earnedLegacyBusiness = 0;
-    businessAssets.forEach((b) => {
-      if (b.owned) {
-        earnedLegacyBusiness += Math.round(b.cost * b.annualIncomeRate);
-      }
-    });
-
-    // 2. Bank Deposits
-    let earnedDepositInterest = 0;
-    let maturedDepositsPayout = 0; // Principal + interest returned upon deposit maturity
-    const updatedDeposits: BankDeposit[] = [];
-    deposits.forEach((dep) => {
-      const yearsPassed = year + 1 - dep.startYear;
-      const interestForYear = Math.round(dep.currentAmount * dep.interestRate);
-      earnedDepositInterest += interestForYear;
-      const nextAmount = dep.currentAmount + interestForYear;
-
-      if (yearsPassed >= dep.termYears) {
-        maturedDepositsPayout += nextAmount; // Returned safely to cash!
+    try {
+      // Resolve interactive events before mutating the year's financial state. This
+      // ensures reports, history, and a final-year result include the player's choice.
+      let chosenEvent: GameRandomEvent;
+      if (prefetchedEvent) {
+        chosenEvent = prefetchedEvent;
       } else {
-        updatedDeposits.push({
-          ...dep,
-          currentAmount: nextAmount,
+        const recent = recentEventIds || [];
+        let eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
+          if (event.requiresCar && !hasCar) return false;
+          if (event.requiresApartment && !hasApartment) return false;
+          return !recent.includes(event.id);
+        });
+
+        if (eligible.length === 0) {
+          eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
+            if (event.requiresCar && !hasCar) return false;
+            if (event.requiresApartment && !hasApartment) return false;
+            return true;
+          });
+        }
+
+        chosenEvent = eligible[Math.floor(Math.random() * eligible.length)] || LOCAL_GAMEPLAY_EVENTS[0];
+      }
+
+      setCurrentEvent(chosenEvent);
+      let eventLossAfterInsurance = chosenEvent.choices?.length ? 0 : chosenEvent.cashDelta;
+      let insuranceSaved = false;
+      if (chosenEvent.coveredByInsurance) {
+        const activePolicy = insurances.find(
+          (policy) => policy.type === chosenEvent.coveredByInsurance && policy.active
+        );
+        if (activePolicy) {
+          insuranceSaved = true;
+          eventLossAfterInsurance = 0;
+        }
+      }
+      const emergencyFundProtection = protectEventLossWithEmergencyFund(
+        eventLossAfterInsurance,
+        emergencyFundMonths,
+        insuranceSaved
+      );
+      eventLossAfterInsurance = emergencyFundProtection.cashDelta;
+      setEventInsuranceSaved(insuranceSaved);
+      setEventEmergencyFundSaved(emergencyFundProtection.protectedAmount);
+      setEventCashDeltaAfterProtection(eventLossAfterInsurance);
+      setIsEventModalOpen(true);
+
+      let selectedEventChoice: EventChoice | undefined;
+      if (chosenEvent.choices?.length) {
+        selectedEventChoice = await new Promise<EventChoice>((resolve) => {
+          pendingEventChoiceResolverRef.current = resolve;
         });
       }
-    });
-    setDeposits(updatedDeposits);
+      const eventImpact = combineEventChoiceImpact(
+        { cashDelta: eventLossAfterInsurance, joyDelta: chosenEvent.joyDelta },
+        selectedEventChoice
+      );
 
-    // 3. Bank Loans & Debt Payments
-    let totalLoanPayments = 0;
-    const updatedLoans: Loan[] = [];
-    loans.forEach((loan) => {
-      totalLoanPayments += loan.annualPayment;
-      const nextDebt = Math.max(0, loan.remainingDebt - (loan.annualPayment - loan.remainingDebt * loan.annualInterestRate));
-      if (loan.yearsRemaining > 1) {
-        updatedLoans.push({
-          ...loan,
-          remainingDebt: Math.round(nextDebt),
-          yearsRemaining: loan.yearsRemaining - 1,
-        });
-      }
-    });
-    setLoans(updatedLoans);
+      if (prefetchedEvent) setPrefetchedEvent(null);
+      setRecentEventIds((prev) => [chosenEvent.id, ...prev.filter((id) => id !== chosenEvent.id)].slice(0, 30));
 
-    // 4. Credit Card Interest
-    let creditCardInterestPaid = 0;
-    let nextCreditCard = { ...creditCard };
-    if (nextCreditCard.usedAmount > 0) {
-      if (nextCreditCard.gracePeriodYearsRemaining > 0) {
-        nextCreditCard.gracePeriodYearsRemaining = 0;
-      } else {
-        const interest = Math.round(nextCreditCard.usedAmount * nextCreditCard.interestRate);
-        const penalty = Math.round(nextCreditCard.usedAmount * nextCreditCard.penaltyRate);
-        creditCardInterestPaid = interest + penalty;
-        nextCreditCard.usedAmount += interest + penalty;
-        nextCreditCard.isOverdue = true;
-      }
-    }
-    setCreditCard(nextCreditCard);
+      // 1. Annual investment income and issuer defaults. Dividends use opening holdings.
+      const earnedDividends = calculateAnnualStockDividends(stocks);
+      const bondYear = processAnnualBondDefaults(bonds);
+      const updatedBonds = bondYear.bonds;
+      const earnedCoupons = bondYear.couponsEarned;
+      setBonds(updatedBonds);
 
-    // 5. Debit card cashback
-    const totalSpentThisYear =
-      mandatoryExpensesCost +
-      optionalExpenses
-        .filter((e) => acceptedOptionalIds.includes(e.id))
-        .reduce((acc, e) => acc + e.cost, 0);
-
-    const cashbackEarned = debitCard.active
-      ? Math.round(totalSpentThisYear * debitCard.cashbackRate)
-      : 0;
-
-    // 6. Tax Deductions
-    const taxDeductionEarned = pendingTaxRefund;
-    setPendingTaxRefund(0);
-
-    // 7. Random Event Generator
-    let chosenEvent: GameRandomEvent;
-    if (prefetchedEvent) {
-      chosenEvent = prefetchedEvent;
-      setPrefetchedEvent(null);
-    } else {
-      const recent = recentEventIds || [];
-      let eligible = EXPANDED_EVENTS_POOL.filter((ev) => {
-        if (ev.requiresCar && !hasCar) return false;
-        if (ev.requiresApartment && !hasApartment) return false;
-        return !recent.includes(ev.id);
+      let earnedLegacyBusiness = 0;
+      businessAssets.forEach((b) => {
+        if (b.owned) {
+          earnedLegacyBusiness += Math.round(b.cost * b.annualIncomeRate);
+        }
       });
 
-      if (eligible.length === 0) {
-        eligible = EXPANDED_EVENTS_POOL.filter((ev) => {
-          if (ev.requiresCar && !hasCar) return false;
-          if (ev.requiresApartment && !hasApartment) return false;
-          return true;
-        });
-      }
+      // 2. Bank deposits. In the standard edition, interest compounds inside the deposit
+      // and is paid once at maturity; it must not also be credited to cash every year.
+      const depositYear = resolveDepositYear(deposits, year, IS_YANDEX_GAMES_BUILD);
+      const earnedDepositInterest = depositYear.interestEarned;
+      const accruedDepositInterest = depositYear.interestAccrued;
+      const maturedDepositsPayout = depositYear.maturedPayout;
+      const maturedDepositPrincipal = depositYear.principalReturned;
+      const updatedDeposits = depositYear.deposits;
+      setDeposits(updatedDeposits);
 
-      chosenEvent = eligible[Math.floor(Math.random() * eligible.length)] || EXPANDED_EVENTS_POOL[0];
-    }
-
-    setRecentEventIds((prev) => [chosenEvent.id, ...prev.filter((id) => id !== chosenEvent.id)].slice(0, 30));
-    setCurrentEvent(chosenEvent);
-
-    let eventLossAfterInsurance = chosenEvent.choices && chosenEvent.choices.length > 0 ? 0 : chosenEvent.cashDelta;
-    let insuranceSaved = false;
-    if (chosenEvent.coveredByInsurance) {
-      const activePolicy = insurances.find(
-        (i) => i.type === chosenEvent.coveredByInsurance && i.active
-      );
-      if (activePolicy) {
-        insuranceSaved = true;
-        eventLossAfterInsurance = 0;
-      }
-    }
-    setEventInsuranceSaved(insuranceSaved);
-    setIsEventModalOpen(true);
-
-    // 8. Update Macro Economy & News
-    let nextNews: MacroNews;
-    if (activeCrisis && activeCrisis.yearsRemaining && activeCrisis.yearsRemaining > 1) {
-      const rem = activeCrisis.yearsRemaining - 1;
-      nextNews = {
-        ...activeCrisis,
-        yearsRemaining: rem,
-      };
-      setActiveCrisis(nextNews);
-    } else if (activeCrisis && activeCrisis.yearsRemaining === 1) {
-      nextNews = pickRichMacroNews('BOOM');
-      setActiveCrisis(null);
-    } else {
-      if (prefetchedNews) {
-        nextNews = prefetchedNews;
-        setPrefetchedNews(null);
-        if (nextNews.durationYears && nextNews.durationYears > 1) {
-          setActiveCrisis(nextNews);
+      // 3. Bank Loans & Debt Payments
+      let totalLoanPayments = 0;
+      const updatedLoans: Loan[] = [];
+      loans.forEach((loan) => {
+        const interestForYear = Math.round(loan.remainingDebt * loan.annualInterestRate);
+        totalLoanPayments += loan.annualPayment;
+        const nextDebt = Math.max(0, loan.remainingDebt - (loan.annualPayment - interestForYear));
+        if (nextDebt > 0) {
+          updatedLoans.push({
+            ...loan,
+            remainingDebt: Math.round(nextDebt),
+            yearsRemaining: Math.max(0, loan.yearsRemaining - 1),
+          });
         }
+      });
+      setLoans(updatedLoans);
+
+      // 4. Credit Card Interest
+      let creditCardInterestPaid = 0;
+      let nextCreditCard = { ...creditCard };
+      if (nextCreditCard.usedAmount > 0) {
+        if (nextCreditCard.gracePeriodYearsRemaining > 0) {
+          nextCreditCard.gracePeriodYearsRemaining = 0;
+        } else {
+          const interest = Math.round(nextCreditCard.usedAmount * nextCreditCard.interestRate);
+          const penalty = Math.round(nextCreditCard.usedAmount * nextCreditCard.penaltyRate);
+          creditCardInterestPaid = interest + penalty;
+          nextCreditCard.usedAmount += interest + penalty;
+          nextCreditCard.isOverdue = true;
+        }
+      }
+      setCreditCard(nextCreditCard);
+
+      const cardFeesPaid = IS_YANDEX_GAMES_BUILD
+        ? debitCard.active ? debitCard.annualFee : 0
+        : debitCard.active || debitCard.lastFeePaidYear === year
+        ? debitCard.annualFee
+        : 0;
+      const cardFeeDueAtSettlement = !IS_YANDEX_GAMES_BUILD &&
+        debitCard.active &&
+        debitCard.lastFeePaidYear !== year
+        ? debitCard.annualFee
+        : 0;
+      if (cardFeeDueAtSettlement > 0) {
+        setDebitCard((prev) => ({ ...prev, lastFeePaidYear: year }));
+      }
+
+      // 5. Debit card cashback
+      const totalSpentThisYear =
+        mandatoryExpensesCost +
+        optionalExpenses
+          .filter((e) => acceptedOptionalIds.includes(e.id))
+          .reduce((acc, e) => acc + e.cost, 0);
+
+      const cashbackEarned = debitCard.active
+        ? Math.round(totalSpentThisYear * debitCard.cashbackRate)
+        : 0;
+
+      // 6. Tax Deductions
+      const taxDeductionEarned = pendingTaxRefund;
+      setPendingTaxRefund(0);
+
+      // 8. Update Macro Economy & News
+      let nextNews: MacroNews;
+      if (activeCrisis && activeCrisis.yearsRemaining && activeCrisis.yearsRemaining > 1) {
+        const rem = activeCrisis.yearsRemaining - 1;
+        nextNews = {
+          ...activeCrisis,
+          yearsRemaining: rem,
+        };
+        setActiveCrisis(nextNews);
+      } else if (activeCrisis && activeCrisis.yearsRemaining === 1) {
+        nextNews = pickRichMacroNews('BOOM');
+        setActiveCrisis(null);
       } else {
-        nextNews = pickRichMacroNews();
-        if (nextNews.durationYears && nextNews.durationYears > 1) {
-          setActiveCrisis(nextNews);
-        }
-      }
-    }
-
-    setNewsHistory((prev) => [
-      { year, news: currentNews, inflation: inflationRate, keyRate },
-      ...prev,
-    ]);
-    setCurrentNews(nextNews);
-
-    // 8. Update Macro Economy, Central Bank & News
-    let deltaInf = nextNews.inflationDelta || 0;
-    let deltaKey = nextNews.keyRateDelta || 0;
-    if (nextNews.cycleType === 'CRISIS' || nextNews.cycleType === 'STAGFLATION') {
-      deltaInf = Math.max(0.02, deltaInf);
-      deltaKey = Math.max(0.025, deltaKey);
-    } else if (nextNews.cycleType === 'BOOM' || nextNews.cycleType === 'TECH_RALLY') {
-      deltaInf = Math.min(-0.01, deltaInf);
-      deltaKey = Math.min(-0.015, deltaKey);
-    }
-
-    const nextInflation = Math.max(0.04, Math.min(0.20, +(inflationRate + deltaInf).toFixed(3)));
-
-    // Living Central Bank Decision Engine
-    let cbDecision = nextNews.centralBank;
-    if (!cbDecision) {
-      let action: 'RAISE' | 'CUT' | 'HOLD' = 'HOLD';
-      let rChange = 0;
-      if (nextInflation > 0.085) {
-        action = 'RAISE';
-        rChange = +(Math.min(0.025, (nextInflation - 0.04) * 0.35)).toFixed(3);
-      } else if (nextInflation < 0.06 && keyRate > 0.09) {
-        action = 'CUT';
-        rChange = -0.015;
-      }
-
-      const calculatedKeyRate = Math.max(0.065, Math.min(0.23, +(keyRate + rChange).toFixed(3)));
-      const stmt =
-        action === 'RAISE'
-          ? `Совет директоров Банка России повысил ключевую ставку до ${(calculatedKeyRate * 100).toFixed(1)}% годовых для сдерживания ценового давления.`
-          : action === 'CUT'
-          ? `Банк России снизил ключевую ставку до ${(calculatedKeyRate * 100).toFixed(1)}% годовых на фоне замедления инфляции для поддержки деловой активности.`
-          : `Банк России сохранил ставку на уровне ${(calculatedKeyRate * 100).toFixed(1)}% годовых: баланс рисков остается сбалансированным.`;
-
-      cbDecision = {
-        action,
-        rateChange: rChange,
-        newKeyRate: calculatedKeyRate,
-        statement: stmt,
-        guidance: action === 'RAISE' ? 'HAWKISH' : action === 'CUT' ? 'DOVISH' : 'NEUTRAL',
-        inflationTarget: 0.04,
-        reasoning:
-          action === 'RAISE'
-            ? 'Перегрев кредитования и рост производственных издержек требуют жестких условий ДКП.'
-            : action === 'CUT'
-            ? 'Замедление темпов роста цен открыло окно возможностей для стимулирования инвестиций.'
-            : 'Текущие денежно-кредитные условия адекватны прогнозу инфляции 4%.',
-      };
-      nextNews = {
-        ...nextNews,
-        centralBank: cbDecision,
-      };
-    }
-
-    const nextKeyRate = cbDecision ? cbDecision.newKeyRate : Math.max(0.07, Math.min(0.23, +(keyRate + deltaKey).toFixed(3)));
-    setInflationRate(nextInflation);
-    setKeyRate(nextKeyRate);
-    setCurrentNews(nextNews);
-
-    // Dynamic Business Empire Profits & Valuation
-    let earnedEmpireProfit = 0;
-    const updatedBusinessEmpires = businessEmpires.map((biz) => {
-      if (!biz.owned) return biz;
-
-      const bizMult = nextNews.marketImpact?.businessMultiplier || 1.0;
-      const isTechFavored = nextNews.marketImpact?.favoredSector?.includes('IT') && biz.sector.includes('Технологии');
-      const isRetailFavored = nextNews.marketImpact?.favoredSector?.includes('Потребительский') && biz.sector.includes('ритейл');
-      const sectorBonus = isTechFavored || isRetailFavored ? 0.18 : 0;
-      const rateEffect = nextKeyRate > 0.15 ? -0.06 : nextKeyRate < 0.10 ? +0.06 : 0;
-
-      const dynamicProfitMultiplier = Math.max(0.70, Math.min(1.50, bizMult + sectorBonus + rateEffect));
-      const yearProfit = Math.round(biz.annualProfit * dynamicProfitMultiplier);
-
-      const divFlow = biz.isIpo ? Math.round(biz.currentValuation * (biz.dividendYield || 0.25)) : 0;
-      earnedEmpireProfit += yearProfit + divFlow;
-
-      const newBizValuation = Math.round(biz.currentValuation * (1 + (dynamicProfitMultiplier - 1.0) * 0.35));
-
-      return {
-        ...biz,
-        currentValuation: newBizValuation,
-        lastProfitMultiplier: dynamicProfitMultiplier,
-      };
-    });
-    setBusinessEmpires(updatedBusinessEmpires);
-
-    // 9. Update Stock, Crypto & Real Estate Prices
-    setStocks((prev) =>
-      prev.map((stock) => {
-        // If this is a player's IPO company, link its price directly to business valuation & profits!
-        if (stock.isPlayerCompany && stock.companyEmpireId) {
-          const linkedBiz = updatedBusinessEmpires.find((b) => b.id === stock.companyEmpireId);
-          if (linkedBiz) {
-            const calculatedSharePrice = Math.max(10, Math.round(linkedBiz.currentValuation / 100000));
-            return {
-              ...stock,
-              prevPrice: stock.price,
-              price: calculatedSharePrice,
-              dividendYield: linkedBiz.dividendYield || stock.dividendYield,
-              heldSharesLastYear: stock.ownedShares,
-              history: [...stock.history, calculatedSharePrice].slice(-6),
-            };
+        if (prefetchedNews) {
+          nextNews = prefetchedNews;
+          setPrefetchedNews(null);
+          if (nextNews.durationYears && nextNews.durationYears > 1) {
+            setActiveCrisis(nextNews);
+          }
+        } else {
+          nextNews = pickRichMacroNews();
+          if (nextNews.durationYears && nextNews.durationYears > 1) {
+            setActiveCrisis(nextNews);
           }
         }
-
-        const sectorFavored = nextNews.marketImpact?.favoredSector === stock.sector;
-        const sectorHit = nextNews.marketImpact?.hitSector === stock.sector;
-        const sectorBonus = sectorFavored ? 0.15 : sectorHit ? -0.20 : 0;
-        const randomFactor = Math.random() * 0.2 - 0.1;
-        const multiplier = Math.max(
-          0.5,
-          (nextNews.marketImpact?.stockMarketMultiplier || 1.0) + sectorBonus + randomFactor
-        );
-        const newPrice = Math.max(10, Math.round(stock.price * multiplier));
-        return {
-          ...stock,
-          prevPrice: stock.price,
-          price: newPrice,
-          heldSharesLastYear: stock.ownedShares,
-          history: [...stock.history, newPrice].slice(-6),
-        };
-      })
-    );
-
-    // Crypto Market: Authentic 4-Year Halving Cycle + bounded corridor
-    // year % 4 == 1: Post-halving Bull Run (+40% to +85%)
-    // year % 4 == 2: Bear Market Crash (-35% to -50%)
-    // year % 4 == 3: Accumulation Bottom (-10% to +15%)
-    // year % 4 == 0: Pre-halving Rally (+20% to +45%)
-    const halvingPhase = year % 4;
-    setCrypto((prev) =>
-      prev.map((coin) => {
-        let phaseMultiplier = 1.0;
-        if (halvingPhase === 1) {
-          phaseMultiplier = 1.35 + Math.random() * 0.35;
-        } else if (halvingPhase === 2) {
-          phaseMultiplier = 0.55 + Math.random() * 0.12;
-        } else if (halvingPhase === 3) {
-          phaseMultiplier = 0.95 + Math.random() * 0.18;
-        } else {
-          phaseMultiplier = 1.22 + Math.random() * 0.22;
-        }
-
-        const newsCryptoMult = nextNews.marketImpact?.cryptoMultiplier || 1.0;
-        const totalMult = phaseMultiplier * (1 + (newsCryptoMult - 1.0) * 0.35);
-
-        const initialCoin = INITIAL_CRYPTO.find((c) => c.id === coin.id) || coin;
-        const secularTrend = initialCoin.price * Math.pow(1.06, Math.min(50, year));
-        let newPrice = Math.round(coin.price * totalMult);
-
-        if (newPrice > secularTrend * 6) {
-          newPrice = Math.round(newPrice * 0.85); // Gravitational pull down from bubble top
-        } else if (newPrice < secularTrend * 0.3) {
-          newPrice = Math.round(newPrice * 1.25); // Support rebound from panic trough
-        }
-        newPrice = Math.max(10, newPrice);
-
-        return {
-          ...coin,
-          prevPrice: coin.price,
-          price: newPrice,
-          history: [...coin.history, newPrice].slice(-6),
-        };
-      })
-    );
-
-    // Real Estate Market Update & Rent Calculation
-    // Mortgages cool down when key rate is high (>14%); subsidized boom when low (<10%)
-    // Prices follow rational economic corridor (NEVER explode into hundreds of billions!)
-    let earnedRentIncome = 0;
-    const rateCooling = nextKeyRate > 0.14 ? -0.04 : nextKeyRate < 0.10 ? +0.03 : 0;
-    const cycleBonus = nextNews.cycleType === 'BOOM' ? 0.05 : nextNews.cycleType === 'CRISIS' ? -0.04 : 0.01;
-    const netPropertyMultiplier = 1 + Math.max(-0.05, Math.min(0.08, nextInflation * 0.55 + cycleBonus + rateCooling));
-
-    const updatedRealEstate = realEstate.map((prop) => {
-      const rent = prop.isRenovated ? Math.round(prop.annualRentIncome * 1.3) : prop.annualRentIncome;
-      const netPropIncome = (rent - prop.annualMaintenance) * prop.ownedCount;
-      earnedRentIncome += Math.max(0, netPropIncome);
-
-      const initialProp = INITIAL_REAL_ESTATE.find((p) => p.id === prop.id) || prop;
-      const maxReasonablePrice = Math.round(initialProp.basePrice * Math.pow(1.05, Math.min(50, year)) * 2.2);
-      let calculatedPrice = Math.round(prop.currentPrice * netPropertyMultiplier);
-      if (calculatedPrice > maxReasonablePrice) {
-        calculatedPrice = Math.round(maxReasonablePrice + (calculatedPrice - maxReasonablePrice) * 0.2);
       }
 
-      const newRent = Math.round(prop.annualRentIncome * (1 + nextInflation * 0.65));
+      setNewsHistory((prev) => [
+        { year, news: currentNews, inflation: inflationRate, keyRate },
+        ...prev,
+      ]);
+      setCurrentNews(nextNews);
 
-      return {
-        ...prop,
-        prevPrice: prop.currentPrice,
-        currentPrice: calculatedPrice,
-        annualRentIncome: newRent,
-      };
-    });
-    setRealEstate(updatedRealEstate);
+      // 8. Update Macro Economy, Central Bank & News
+      let deltaInf = nextNews.inflationDelta || 0;
+      let deltaKey = nextNews.keyRateDelta || 0;
+      if (nextNews.cycleType === 'CRISIS' || nextNews.cycleType === 'STAGFLATION') {
+        deltaInf = Math.max(0.02, deltaInf);
+        deltaKey = Math.max(0.025, deltaKey);
+      } else if (nextNews.cycleType === 'BOOM' || nextNews.cycleType === 'TECH_RALLY') {
+        deltaInf = Math.min(-0.01, deltaInf);
+        deltaKey = Math.min(-0.015, deltaKey);
+      }
 
-    // 10. Education Progression & Career Indexation
-    let newAnnualSalary = annualSalary;
-    let educationGraduationSummary = '';
-    const updatedEducationTiers = educationTiers.map((tier) => {
-      if (tier.inProgress && !tier.completed) {
-        const nextProgress = (tier.progressYears || 1) + 1;
-        const targetDuration = tier.durationYears || (gameMode === '10_YEARS' ? 2 : 1);
-        if (nextProgress >= targetDuration) {
-          newAnnualSalary = Math.round(newAnnualSalary * (1 + tier.salaryBonusMultiplier));
-          educationGraduationSummary = `Диплом «${tier.name}» получен (+${Math.round(tier.salaryBonusMultiplier * 100)}% к окладу)!`;
+      const nextInflation = Math.max(0.04, Math.min(0.20, +(inflationRate + deltaInf).toFixed(3)));
+
+      // Living Central Bank Decision Engine
+      let cbDecision = nextNews.centralBank;
+      if (!cbDecision) {
+        let action: 'RAISE' | 'CUT' | 'HOLD' = 'HOLD';
+        let rChange = 0;
+        if (nextInflation > 0.085) {
+          action = 'RAISE';
+          rChange = +(Math.min(0.025, (nextInflation - 0.04) * 0.35)).toFixed(3);
+        } else if (nextInflation < 0.06 && keyRate > 0.09) {
+          action = 'CUT';
+          rChange = -0.015;
+        }
+
+        const calculatedKeyRate = Math.max(0.065, Math.min(0.23, +(keyRate + rChange).toFixed(3)));
+        const stmt =
+          action === 'RAISE'
+            ? `Совет директоров Банка России повысил ключевую ставку до ${(calculatedKeyRate * 100).toFixed(1)}% годовых для сдерживания ценового давления.`
+            : action === 'CUT'
+            ? `Банк России снизил ключевую ставку до ${(calculatedKeyRate * 100).toFixed(1)}% годовых на фоне замедления инфляции для поддержки деловой активности.`
+            : `Банк России сохранил ставку на уровне ${(calculatedKeyRate * 100).toFixed(1)}% годовых: баланс рисков остается сбалансированным.`;
+
+        cbDecision = {
+          action,
+          rateChange: rChange,
+          newKeyRate: calculatedKeyRate,
+          statement: stmt,
+          guidance: action === 'RAISE' ? 'HAWKISH' : action === 'CUT' ? 'DOVISH' : 'NEUTRAL',
+          inflationTarget: 0.04,
+          reasoning:
+            action === 'RAISE'
+              ? 'Перегрев кредитования и рост производственных издержек требуют жестких условий ДКП.'
+              : action === 'CUT'
+              ? 'Замедление темпов роста цен открыло окно возможностей для стимулирования инвестиций.'
+              : 'Текущие денежно-кредитные условия адекватны прогнозу инфляции 4%.',
+        };
+        nextNews = {
+          ...nextNews,
+          centralBank: cbDecision,
+        };
+      }
+
+      const nextKeyRate = cbDecision ? cbDecision.newKeyRate : Math.max(0.07, Math.min(0.23, +(keyRate + deltaKey).toFixed(3)));
+      setInflationRate(nextInflation);
+      setKeyRate(nextKeyRate);
+      setCurrentNews(nextNews);
+
+      // Standard edition: businesses are private operating assets with temporary operating risks.
+      // Preserve the existing Yandex rules until that edition is intentionally rebalanced.
+      let earnedEmpireProfit = 0;
+      let businessIncidentSummaries: string[] = [];
+      let updatedBusinessEmpires: BusinessEmpire[];
+      if (IS_YANDEX_GAMES_BUILD) {
+        updatedBusinessEmpires = businessEmpires.map((biz) => {
+          if (!biz.owned) return biz;
+
+          const bizMult = nextNews.marketImpact?.businessMultiplier || 1.0;
+          const isTechFavored = nextNews.marketImpact?.favoredSector?.includes('IT') && biz.sector.includes('Технологии');
+          const isRetailFavored = nextNews.marketImpact?.favoredSector?.includes('Потребительский') && biz.sector.includes('ритейл');
+          const sectorBonus = isTechFavored || isRetailFavored ? 0.18 : 0;
+          const rateEffect = nextKeyRate > 0.15 ? -0.06 : nextKeyRate < 0.10 ? +0.06 : 0;
+
+          const dynamicProfitMultiplier = Math.max(0.70, Math.min(1.50, bizMult + sectorBonus + rateEffect));
+          const yearProfit = Math.round(biz.annualProfit * dynamicProfitMultiplier);
+          if (!biz.isIpo) earnedEmpireProfit += yearProfit;
+
+          const newBizValuation = Math.round(biz.currentValuation * (1 + (dynamicProfitMultiplier - 1.0) * 0.35));
+          return {
+            ...biz,
+            currentValuation: newBizValuation,
+            lastProfitMultiplier: dynamicProfitMultiplier,
+          };
+        });
+      } else {
+        const businessYear = processStandardBusinessYear(businessEmpires, {
+          businessMultiplier: nextNews.marketImpact?.businessMultiplier || 1,
+          favoredSector: nextNews.marketImpact?.favoredSector,
+          keyRate: nextKeyRate,
+        });
+        updatedBusinessEmpires = businessYear.businesses;
+        earnedEmpireProfit = businessYear.operatingProfit;
+        businessIncidentSummaries = businessYear.incidentSummaries;
+      }
+      setBusinessEmpires(updatedBusinessEmpires);
+
+      // 9. Update Stock, Crypto & Real Estate Prices
+      const stockMarketCatalyst = IS_YANDEX_GAMES_BUILD
+        ? null
+        : rollStockMarketCatalyst(stocks);
+      const updatedStocks = stocks.map((stock) => {
+          // If this is a Yandex player's IPO company, preserve its existing linked-price mechanic.
+          if (IS_YANDEX_GAMES_BUILD && stock.isPlayerCompany && stock.companyEmpireId) {
+            const linkedBiz = updatedBusinessEmpires.find((b) => b.id === stock.companyEmpireId);
+            if (linkedBiz) {
+              const calculatedSharePrice = Math.max(10, Math.round(linkedBiz.currentValuation / 100000));
+              return {
+                ...stock,
+                prevPrice: stock.price,
+                price: calculatedSharePrice,
+                dividendYield: linkedBiz.dividendYield || stock.dividendYield,
+                heldSharesLastYear: stock.ownedShares,
+                history: [...stock.history, calculatedSharePrice].slice(-6),
+              };
+            }
+          }
+
+          const sectorFavored = nextNews.marketImpact?.favoredSector === stock.sector;
+          const sectorHit = nextNews.marketImpact?.hitSector === stock.sector;
+          const sectorBonus = sectorFavored ? 0.15 : sectorHit ? -0.20 : 0;
+          const randomFactor = IS_YANDEX_GAMES_BUILD
+            ? Math.random() * 0.2 - 0.1
+            : Math.random() * 0.1 - 0.05;
+          const baselineMultiplier =
+            (nextNews.marketImpact?.stockMarketMultiplier || 1.0) + sectorBonus + randomFactor;
+          const catalystMultiplier = stockMarketCatalyst?.stockId === stock.id
+            ? 1 + stockMarketCatalyst.priceImpact
+            : 1;
+          const multiplier = IS_YANDEX_GAMES_BUILD
+            ? Math.max(0.5, baselineMultiplier)
+            : Math.max(0.5, Math.min(1.5, baselineMultiplier * catalystMultiplier));
+          const newPrice = Math.max(10, Math.round(stock.price * multiplier));
+          return {
+            ...stock,
+            prevPrice: stock.price,
+            price: newPrice,
+            heldSharesLastYear: stock.ownedShares,
+            history: [...stock.history, newPrice].slice(-6),
+          };
+        });
+      setStocks(updatedStocks);
+
+      // Crypto Market: Authentic 4-Year Halving Cycle + bounded corridor
+      // year % 4 == 1: Post-halving Bull Run (+40% to +85%)
+      // year % 4 == 2: Bear Market Crash (-35% to -50%)
+      // year % 4 == 3: Accumulation Bottom (-10% to +15%)
+      // year % 4 == 0: Pre-halving Rally (+20% to +45%)
+      const halvingPhase = year % 4;
+      const updatedCrypto = crypto.map((coin) => {
+          let phaseMultiplier = 1.0;
+          if (halvingPhase === 1) {
+            phaseMultiplier = 1.35 + Math.random() * 0.35;
+          } else if (halvingPhase === 2) {
+            phaseMultiplier = 0.55 + Math.random() * 0.12;
+          } else if (halvingPhase === 3) {
+            phaseMultiplier = 0.95 + Math.random() * 0.18;
+          } else {
+            phaseMultiplier = 1.22 + Math.random() * 0.22;
+          }
+
+          const newsCryptoMult = nextNews.marketImpact?.cryptoMultiplier || 1.0;
+          const totalMult = phaseMultiplier * (1 + (newsCryptoMult - 1.0) * 0.35);
+
+          const initialCoin = INITIAL_CRYPTO.find((c) => c.id === coin.id) || coin;
+          const secularTrend = initialCoin.price * Math.pow(1.06, Math.min(50, year));
+          let newPrice = Math.round(coin.price * totalMult);
+
+          if (newPrice > secularTrend * 6) {
+            newPrice = Math.round(newPrice * 0.85); // Gravitational pull down from bubble top
+          } else if (newPrice < secularTrend * 0.3) {
+            newPrice = Math.round(newPrice * 1.25); // Support rebound from panic trough
+          }
+          newPrice = Math.max(10, newPrice);
+
+          return {
+            ...coin,
+            prevPrice: coin.price,
+            price: newPrice,
+            history: [...coin.history, newPrice].slice(-6),
+          };
+        });
+      setCrypto(updatedCrypto);
+
+      // Real Estate Market Update & Rent Calculation
+      // Mortgages cool down when key rate is high (>14%); subsidized boom when low (<10%)
+      // Prices follow rational economic corridor (NEVER explode into hundreds of billions!)
+      let earnedRentIncome = 0;
+      const rateCooling = nextKeyRate > 0.14 ? -0.04 : nextKeyRate < 0.10 ? +0.03 : 0;
+      const cycleBonus = nextNews.cycleType === 'BOOM' ? 0.05 : nextNews.cycleType === 'CRISIS' ? -0.04 : 0.01;
+      const netPropertyMultiplier = 1 + Math.max(-0.05, Math.min(0.08, nextInflation * 0.55 + cycleBonus + rateCooling));
+
+      const updatedRealEstate = realEstate.map((prop) => {
+        const netPropIncome = IS_YANDEX_GAMES_BUILD
+          ? (prop.annualRentIncome - prop.annualMaintenance) * prop.ownedCount
+          : getNetAnnualRent(prop);
+        earnedRentIncome += Math.max(0, netPropIncome);
+
+        const initialProp = INITIAL_REAL_ESTATE.find((p) => p.id === prop.id) || prop;
+        const maxReasonablePrice = Math.round(initialProp.basePrice * Math.pow(1.05, Math.min(50, year)) * 2.2);
+        let calculatedPrice = Math.round(prop.currentPrice * netPropertyMultiplier);
+        if (calculatedPrice > maxReasonablePrice) {
+          calculatedPrice = Math.round(maxReasonablePrice + (calculatedPrice - maxReasonablePrice) * 0.2);
+        }
+
+        if (IS_YANDEX_GAMES_BUILD) {
+          const newRent = Math.round(prop.annualRentIncome * (1 + nextInflation * 0.65));
+          return {
+            ...prop,
+            prevPrice: prop.currentPrice,
+            currentPrice: calculatedPrice,
+            annualRentIncome: newRent,
+          };
+        }
+
+        return updateRealEstateForYear(prop, calculatedPrice, nextInflation);
+      });
+      setRealEstate(updatedRealEstate);
+      const nextPrimaryResidenceValue = primaryResidenceValue > 0
+        ? Math.round(primaryResidenceValue * netPropertyMultiplier)
+        : 0;
+      setPrimaryResidenceValue(nextPrimaryResidenceValue);
+
+      // 10. Education Progression & Career Indexation
+      let newAnnualSalary = annualSalary;
+      let educationGraduationSummary = '';
+      const updatedEducationTiers = educationTiers.map((tier) => {
+        if (tier.inProgress && !tier.completed) {
+          const nextProgress = (tier.progressYears || 1) + 1;
+          const targetDuration = tier.durationYears || (gameMode === '10_YEARS' ? 2 : 1);
+          if (nextProgress >= targetDuration) {
+            newAnnualSalary = Math.round(newAnnualSalary * (1 + tier.salaryBonusMultiplier));
+            educationGraduationSummary = `Диплом «${tier.name}» получен (+${Math.round(tier.salaryBonusMultiplier * 100)}% к окладу)!`;
+            return {
+              ...tier,
+              progressYears: nextProgress,
+              inProgress: false,
+              completed: true,
+            };
+          }
           return {
             ...tier,
             progressYears: nextProgress,
-            inProgress: false,
-            completed: true,
           };
         }
-        return {
-          ...tier,
-          progressYears: nextProgress,
-        };
-      }
-      return tier;
-    });
-    setEducationTiers(updatedEducationTiers);
+        return tier;
+      });
+      setEducationTiers(updatedEducationTiers);
 
-    // Natural salary indexation with inflation (+3% to +6% per year)
-    const indexedSalary = Math.round(newAnnualSalary * (1 + Math.max(0.03, nextInflation * 0.70)));
-    setAnnualSalary(indexedSalary);
+      // Standard edition wage growth partly follows inflation and has a hard 7% ceiling.
+      const salaryIndexationRate = IS_YANDEX_GAMES_BUILD
+        ? Math.max(0.03, nextInflation * 0.70)
+        : getStandardSalaryIndexationRate(nextInflation);
+      const indexedSalary = Math.round(newAnnualSalary * (1 + salaryIndexationRate));
+      setAnnualSalary(indexedSalary);
 
-    // 11. Net Cash Delta and Net Worth
-    const netCashChange =
-      annualSalary +
-      earnedLegacyBusiness +
-      earnedRentIncome +
-      earnedEmpireProfit +
-      earnedDividends +
-      earnedCoupons +
-      earnedDepositInterest +
-      maturedDepositsPayout +
-      cashbackEarned +
-      taxDeductionEarned -
-      totalLoanPayments +
-      eventLossAfterInsurance;
+      // 11. Net cash and salary effects for the year just completed.
+      const salaryIncomeEarned = Math.round(annualSalary * salaryJoyMultiplier(joy));
+      const netCashChange =
+        salaryIncomeEarned +
+        earnedLegacyBusiness +
+        earnedRentIncome +
+        earnedEmpireProfit +
+        earnedDividends +
+        earnedCoupons +
+        (IS_YANDEX_GAMES_BUILD ? earnedDepositInterest : 0) +
+        maturedDepositsPayout +
+        cashbackEarned +
+        taxDeductionEarned -
+        totalLoanPayments -
+        (IS_YANDEX_GAMES_BUILD ? 0 : cardFeeDueAtSettlement) +
+        eventImpact.cashDelta;
 
-    const nextCash = Math.max(0, cash + netCashChange);
-    setCash(nextCash);
+      const cashMovement = applyCashMovement(cash, netCashChange);
+      const nextCash = cashMovement.balance;
+      setCash(nextCash);
 
-    // Joy Delta with Realistic Life Routine Fatigue (-8 joy per year)
-    const passiveCoversAll = passiveIncomeAnnual >= mandatoryExpensesCost;
-    let routineFatigue = passiveCoversAll ? -4 : -8; // Financial independence softens work fatigue!
-    let joyChange = routineFatigue + chosenEvent.joyDelta;
-    if (cash > annualSalary * 2) joyChange += 2;
-    if (joy < 30) joyChange -= 3; // Burnout downward spiral if neglected
+      // Joy Delta with Realistic Life Routine Fatigue (-8 joy per year)
+      const passiveCoversAll = passiveIncomeAnnual >= mandatoryExpensesCost;
+      let routineFatigue = passiveCoversAll ? -4 : -8; // Financial independence softens work fatigue!
+      let joyChange = routineFatigue + eventImpact.joyDelta;
+      if (cash > annualSalary * 2) joyChange += 2;
+      if (joy < 30) joyChange -= 3; // Burnout downward spiral if neglected
 
-    const nextJoy = Math.max(0, Math.min(100, joy + joyChange));
-    setJoy(nextJoy);
+      const nextJoy = Math.max(0, Math.min(100, joy + joyChange));
+      setJoy(nextJoy);
 
-    // Reset Insurances for next year
-    setInsurances((prev) => prev.map((i) => ({ ...i, active: false })));
+      // Reset Insurances for next year
+      setInsurances((prev) => prev.map((i) => ({ ...i, active: false })));
 
-    // 12. Single Source of Truth for Mandatory Expenses of Next Year
-    const totalCommercialIncome = earnedLegacyBusiness + earnedEmpireProfit;
-    const totalPropertiesValue = updatedRealEstate.reduce(
-      (acc, r) => acc + r.ownedCount * r.currentPrice,
-      0
-    );
+      // 12. Single Source of Truth for Mandatory Expenses of Next Year
+      const totalCommercialIncome = earnedLegacyBusiness + earnedEmpireProfit;
+      const totalPropertiesValue =
+        nextPrimaryResidenceValue +
+        updatedRealEstate.reduce((acc, property) => acc + property.ownedCount * property.currentPrice, 0);
 
-    const nextBreakdown = calculateMandatoryExpensesBreakdown({
-      annualSalary: indexedSalary,
-      businessIncome: totalCommercialIncome,
-      rentIncome: earnedRentIncome,
-      baseLivingFloor: 160000,
-      hasApartment,
-      hasCar,
-      debitCardActive: debitCard.active,
-      inflationMultiplier: Math.pow(1 + nextInflation, Math.min(12, year)),
-      investmentPropertiesCount: updatedRealEstate.reduce((acc, r) => acc + r.ownedCount, 0),
-      propertyTotalValuation: totalPropertiesValue,
-    });
+      const nextBreakdown = calculateMandatoryExpensesBreakdown({
+        annualSalary: Math.round(indexedSalary * salaryJoyMultiplier(nextJoy)),
+        businessIncome: totalCommercialIncome,
+        rentIncome: earnedRentIncome,
+        baseLivingFloor: 160000,
+        hasApartment,
+        hasCar,
+        debitCardActive: IS_YANDEX_GAMES_BUILD ? debitCard.active : false,
+        inflationMultiplier: Math.pow(1 + nextInflation, Math.min(12, year)),
+        investmentPropertiesCount: updatedRealEstate.reduce((acc, r) => acc + r.ownedCount, 0),
+        propertyTotalValuation: totalPropertiesValue,
+      });
 
-    const nextMandatory = nextBreakdown.total;
-    setMandatoryExpensesCost(nextMandatory);
-    setIsMandatoryExpensesPaid(false);
+      const nextMandatory = nextBreakdown.total;
+      setMandatoryExpensesCost(nextMandatory);
+      setIsMandatoryExpensesPaid(false);
 
-    // Update Lifetime Earnings
-    setTotalDividendsEarned((prev) => prev + earnedDividends);
-    setTotalCouponsEarned((prev) => prev + earnedCoupons);
-    setTotalSalaryEarned((prev) => prev + annualSalary);
+      // Update Lifetime Earnings
+      setTotalDividendsEarned((prev) => prev + earnedDividends);
+      setTotalCouponsEarned((prev) => prev + earnedCoupons);
+      setTotalSalaryEarned((prev) => prev + salaryIncomeEarned);
 
-    // Refresh Optional Expenses
-    const shuffled = [...OPTIONAL_EXPENSES_POOL]
-      .filter((e) => {
-        if (e.isOneTimeAssetPurchase === 'CAR' && hasCar) return false;
-        if (e.isOneTimeAssetPurchase === 'APARTMENT' && hasApartment) return false;
-        if (acceptedOptionalIds.includes(e.id)) return false;
-        return true;
-      })
-      .sort(() => 0.5 - Math.random())
-      .slice(0, 3);
-    setOptionalExpenses(shuffled);
-    setAcceptedOptionalIds([]);
-    setDeclinedOptionalIds([]);
+      // Refresh Optional Expenses
+      const shuffled = [...OPTIONAL_EXPENSES_POOL]
+        .filter((e) => {
+          if (e.isOneTimeAssetPurchase === 'CAR' && hasCar) return false;
+          if (e.isOneTimeAssetPurchase === 'APARTMENT' && hasApartment) return false;
+          if (acceptedOptionalIds.includes(e.id)) return false;
+          return true;
+        })
+        .sort(() => 0.5 - Math.random())
+        .slice(0, 3);
+      setOptionalExpenses(shuffled);
+      setAcceptedOptionalIds([]);
+      setDeclinedOptionalIds([]);
 
-    // Turn Report
-    const eventsReportList = [
-      `${chosenEvent.title}: ${
-        insuranceSaved
-          ? 'расход покрыт страховкой!'
-          : `${chosenEvent.cashDelta >= 0 ? '+' : ''}${chosenEvent.cashDelta.toLocaleString('ru-RU')} ₽`
-      }`,
-    ];
-    if (cbDecision) {
-      eventsReportList.push(`Решение ЦБ РФ: ${cbDecision.statement}`);
-    }
-    if (maturedDepositsPayout > 0) {
-      eventsReportList.push(
-        `Вклад закрыт по окончании срока: на счет выплачено ${maturedDepositsPayout.toLocaleString('ru-RU')} ₽ (тело вклада + проценты)!`
-      );
-    }
-    if (educationGraduationSummary) {
-      eventsReportList.push(educationGraduationSummary);
-    }
-    if (earnedRentIncome > 0) {
-      eventsReportList.push(`Арендный доход от недвижимости: +${earnedRentIncome.toLocaleString('ru-RU')} ₽`);
-    }
-    if (earnedEmpireProfit > 0) {
-      eventsReportList.push(`Прибыль от бизнес-империи: +${earnedEmpireProfit.toLocaleString('ru-RU')} ₽`);
-    }
-
-    const report: TurnReport = {
-      year,
-      salaryIncome: indexedSalary,
-      businessIncome: earnedLegacyBusiness + earnedEmpireProfit,
-      rentIncomeEarned: earnedRentIncome,
-      dividendsEarned: earnedDividends,
-      couponsEarned: earnedCoupons,
-      depositInterestEarned: earnedDepositInterest,
-      depositMaturedReturned: maturedDepositsPayout,
-      cashbackEarned,
-      taxDeductionsEarned: taxDeductionEarned,
-      mandatoryExpensesPaid: mandatoryExpensesCost,
-      nextYearMandatoryExpenses: nextMandatory,
-      mandatoryExpensesDelta: nextMandatory - mandatoryExpensesCost,
-      mandatoryExpensesReason: `Обязательный платеж изменился: инфляция ${(nextInflation * 100).toFixed(1)}%${hasCar ? ', автоналог и ТО' : ''}${hasApartment ? ', собственное жилье' : ''}${newAnnualSalary > annualSalary ? ', рост оклада и НДФЛ' : ''}${totalCommercialIncome > 0 ? ', налог на бизнес УСН/ОСНО' : ''}.`,
-      optionalExpensesPaid: totalSpentThisYear - mandatoryExpensesCost,
-      insurancePaid: insurances.filter((i) => i.active).reduce((acc, i) => acc + i.annualCost, 0),
-      cardFeesPaid: debitCard.active ? debitCard.annualFee : 0,
-      loanPaymentsPaid: totalLoanPayments,
-      creditCardInterestPaid,
-      eventsSummary: eventsReportList,
-      netCashDelta: netCashChange,
-      netWorthDelta: nextCash - cash,
-      joyDelta: joyChange,
-    };
-    setLastTurnReport(report);
-    setIsTurnSummaryOpen(true);
-
-    // Update History Chart Data
-    const nextYear = year + 1;
-    setYear(nextYear);
-    setHistory((prev) => [
-      ...prev,
-      {
-        year: nextYear,
-        netWorth: nextCash + totalInvested - debtTotal,
+      // Reconcile the post-transition balance sheet before rendering the report or ending the run.
+      const nextInvested = calculateInvestedAssetsValue({
+        stocks: updatedStocks,
+        bonds: updatedBonds,
+        deposits: updatedDeposits,
+        crypto: updatedCrypto,
+        businessAssets,
+        realEstate: updatedRealEstate,
+        businessEmpires: updatedBusinessEmpires,
+        primaryResidenceValue: nextPrimaryResidenceValue,
+      });
+      const nextDebtTotal =
+        updatedLoans.reduce((sum, loan) => sum + loan.remainingDebt, 0) + nextCreditCard.usedAmount;
+      const nextNetWorth = calculateNetWorth(nextCash, nextInvested, nextDebtTotal);
+      const nextNetWorthDelta = nextNetWorth - netWorth;
+      const nextPassiveIncome = calculateAnnualPassiveIncome({
+        stocks: updatedStocks,
+        bonds: updatedBonds,
+        deposits: updatedDeposits,
+        businessAssets,
+        realEstate: updatedRealEstate,
+        businessEmpires: updatedBusinessEmpires,
+        useBalancedRealEstate: !IS_YANDEX_GAMES_BUILD,
+        useBalancedBusiness: !IS_YANDEX_GAMES_BUILD,
+      });
+      const outcome = evaluateYearEndOutcome({
+        mode: gameMode,
+        goal,
+        yearsCompleted: year,
+        netWorth: nextNetWorth,
         cash: nextCash,
-        invested: totalInvested,
         joy: nextJoy,
-        passiveIncome: passiveIncomeAnnual,
-      },
-    ]);
+        hasApartment,
+        primaryResidenceValue: nextPrimaryResidenceValue,
+        hasBusiness:
+          businessAssets.some((asset) => asset.type === 'BUSINESS' && asset.owned) ||
+          updatedBusinessEmpires.some((business) => business.owned),
+        passiveIncome: nextPassiveIncome,
+        creditCardDebt: nextCreditCard.usedAmount,
+      });
 
-    // Check Victory / Game Over Condition in 10-Year or Goal Mode
-    if (gameMode === '10_YEARS' && nextYear > 10) {
-      const victory = netWorth >= goal.targetCapital && nextJoy >= goal.minJoy;
-      setIsVictorious(victory);
-      setFailReason(
-        !victory
-          ? netWorth < goal.targetCapital
-            ? `Не удалось накопить целевой капитал ${goal.targetCapital.toLocaleString('ru-RU')} ₽ (накоплено: ${netWorth.toLocaleString('ru-RU')} ₽)`
-            : `Уровень радости упал до ${nextJoy} (требовалось не менее ${goal.minJoy})`
-          : undefined
-      );
-      setIsGameOverOpen(true);
-      recordLeaderboard(victory, nextYear - 1, nextJoy, netWorth);
+      // Turn Report
+      const selectedChoiceEffects = selectedEventChoice
+        ? [
+            selectedEventChoice.cashDelta !== 0
+              ? `${selectedEventChoice.cashDelta > 0 ? '+' : ''}${selectedEventChoice.cashDelta.toLocaleString('ru-RU')} ₽`
+              : '',
+            selectedEventChoice.joyDelta !== 0
+              ? `${selectedEventChoice.joyDelta > 0 ? '+' : ''}${selectedEventChoice.joyDelta} радости`
+              : '',
+          ]
+            .filter(Boolean)
+            .join(', ')
+        : '';
+      const eventOutcomeSummary = selectedEventChoice
+        ? `${selectedEventChoice.label}${selectedChoiceEffects ? ` (${selectedChoiceEffects})` : ''}`
+        : insuranceSaved
+        ? 'расход покрыт страховкой!'
+        : emergencyFundProtection.protectedAmount > 0
+        ? `${eventLossAfterInsurance.toLocaleString('ru-RU')} ₽ (резерв защитил ${emergencyFundProtection.protectedAmount.toLocaleString('ru-RU')} ₽)`
+        : `${chosenEvent.cashDelta >= 0 ? '+' : ''}${chosenEvent.cashDelta.toLocaleString('ru-RU')} ₽`;
+      const eventsReportList = [`${chosenEvent.title}: ${eventOutcomeSummary}`];
+      if (cbDecision) {
+        eventsReportList.push(`Решение ЦБ РФ: ${cbDecision.statement}`);
+      }
+      bondYear.defaults.forEach(({ bondName, principalLost }) => {
+        eventsReportList.push(
+          `Дефолт по облигациям «${bondName}»: потеряно ${principalLost.toLocaleString('ru-RU')} ₽ номинала; выпуск обесценился.`
+        );
+      });
+      if (!IS_YANDEX_GAMES_BUILD) {
+        businessIncidentSummaries.forEach((summary) => eventsReportList.push(summary));
+        if (stockMarketCatalyst) {
+          const impactPercent = stockMarketCatalyst.priceImpact * 100;
+          eventsReportList.push(
+            `Биржевое событие по ${stockMarketCatalyst.ticker}: ${stockMarketCatalyst.title}. ${stockMarketCatalyst.description} Самостоятельное влияние на котировку ${impactPercent > 0 ? '+' : ''}${impactPercent.toFixed(0)}% (помимо макроновостей).`
+          );
+        }
+        const educationRaise = newAnnualSalary - annualSalary;
+        eventsReportList.push(
+          `Оклад на следующий год: ${annualSalary.toLocaleString('ru-RU')} ₽ → ${newAnnualSalary.toLocaleString('ru-RU')} ₽ после обучения${educationRaise > 0 ? ` (+${educationRaise.toLocaleString('ru-RU')} ₽)` : ''} → ${indexedSalary.toLocaleString('ru-RU')} ₽ после индексации +${(salaryIndexationRate * 100).toFixed(1)}% (частичная привязка к инфляции, максимум 7%).`
+        );
+      }
+      if (maturedDepositsPayout > 0) {
+        eventsReportList.push(
+          `Вклад закрыт по окончании срока: на счет выплачено ${maturedDepositsPayout.toLocaleString('ru-RU')} ₽ (тело вклада + проценты)!`
+        );
+      }
+      if (educationGraduationSummary) {
+        eventsReportList.push(educationGraduationSummary);
+      }
+      if (earnedRentIncome > 0) {
+        eventsReportList.push(`Арендный доход от недвижимости: +${earnedRentIncome.toLocaleString('ru-RU')} ₽`);
+      }
+      if (earnedEmpireProfit > 0) {
+        eventsReportList.push(`Прибыль от бизнес-империи: +${earnedEmpireProfit.toLocaleString('ru-RU')} ₽`);
+      }
+
+      const optionalExpensesPaid = totalSpentThisYear - mandatoryExpensesCost;
+      const insurancePaid = insurances.filter((policy) => policy.active)
+        .reduce((sum, policy) => sum + policy.annualCost, 0);
+      const netCashFlowForReport = IS_YANDEX_GAMES_BUILD
+        ? cashMovement.actualDelta
+        : calculateAnnualNetCashFlow({
+            salaryIncome: salaryIncomeEarned,
+            businessIncome: earnedLegacyBusiness + earnedEmpireProfit,
+            rentIncomeEarned: earnedRentIncome,
+            dividendsEarned: earnedDividends,
+            couponsEarned: earnedCoupons,
+            depositInterestEarned: earnedDepositInterest,
+            cashbackEarned,
+            taxDeductionsEarned: taxDeductionEarned,
+            mandatoryExpensesPaid: mandatoryExpensesCost,
+            optionalExpensesPaid,
+            insurancePaid,
+            cardFeesPaid,
+            loanPaymentsPaid: totalLoanPayments,
+            creditCardInterestPaid,
+            depositPrincipalReturned: maturedDepositPrincipal,
+            eventCashDelta: eventImpact.cashDelta,
+          });
+
+      const report: TurnReport = {
+        year,
+        salaryIncome: salaryIncomeEarned,
+        businessIncome: earnedLegacyBusiness + earnedEmpireProfit,
+        rentIncomeEarned: earnedRentIncome,
+        dividendsEarned: earnedDividends,
+        couponsEarned: earnedCoupons,
+        depositInterestEarned: earnedDepositInterest,
+        depositInterestAccrued: IS_YANDEX_GAMES_BUILD ? undefined : accruedDepositInterest,
+        depositMaturedReturned: maturedDepositsPayout,
+        depositPrincipalReturned: maturedDepositPrincipal,
+        cashbackEarned,
+        taxDeductionsEarned: taxDeductionEarned,
+        mandatoryExpensesPaid: mandatoryExpensesCost,
+        nextYearMandatoryExpenses: nextMandatory,
+        mandatoryExpensesDelta: nextMandatory - mandatoryExpensesCost,
+        mandatoryExpensesReason: `Обязательный платеж изменился: инфляция ${(nextInflation * 100).toFixed(1)}%${hasCar ? ', автоналог и ТО' : ''}${hasApartment ? ', собственное жилье' : ''}${newAnnualSalary > annualSalary ? ', рост оклада и НДФЛ' : ''}${totalCommercialIncome > 0 ? ', налог на бизнес УСН/ОСНО' : ''}.`,
+        optionalExpensesPaid,
+        insurancePaid,
+        cardFeesPaid,
+        loanPaymentsPaid: totalLoanPayments,
+        creditCardInterestPaid,
+        eventsSummary: eventsReportList,
+        netCashDelta: netCashFlowForReport,
+        netWorthDelta: nextNetWorthDelta,
+        joyDelta: nextJoy - joy,
+      };
+      setLastTurnReport(report);
+      setIsTurnSummaryOpen(true);
+
+      // History starts at year 0 and records the balance sheet after each completed year.
+      const completedYear = year;
+      const nextYear = outcome.shouldEndGame ? year : year + 1;
+      setYear(nextYear);
+      setHistory((prev) => [
+        ...prev,
+        {
+          year: completedYear,
+          netWorth: nextNetWorth,
+          cash: nextCash,
+          invested: nextInvested,
+          joy: nextJoy,
+          passiveIncome: nextPassiveIncome,
+        },
+      ]);
+
+      if (outcome.shouldEndGame) {
+        const status = outcome.goalStatus;
+        const goalFailureReason = !status.capitalMet
+          ? `Не удалось накопить целевой капитал ${goal.targetCapital.toLocaleString('ru-RU')} ₽ (итоговый капитал: ${nextNetWorth.toLocaleString('ru-RU')} ₽)`
+          : !status.joyMet
+          ? `Уровень радости упал до ${nextJoy} (требовалось не менее ${goal.minJoy})`
+          : !status.creditCardClear
+          ? 'Нельзя засчитать победу с непогашенным долгом по кредитной карте.'
+          : !status.apartmentMet
+          ? 'Не выполнено условие о собственном жилье.'
+          : !status.residenceValueMet
+          ? `Стоимость собственного жилья ниже ${goal.requiredAssets?.primaryResidenceValueTarget?.toLocaleString('ru-RU')} ₽.`
+          : !status.cashReserveMet
+          ? `Не сохранён резерв ${goal.requiredAssets?.cashReserveTarget?.toLocaleString('ru-RU')} ₽.`
+          : !status.businessMet
+          ? 'Не выполнено условие о собственном бизнесе.'
+          : !status.passiveIncomeMet
+          ? 'Не достигнут целевой уровень пассивного дохода.'
+          : undefined;
+        const reason = outcome.failureReason || goalFailureReason;
+
+        setIsVictorious(outcome.isVictorious);
+        setFailReason(outcome.isVictorious ? undefined : reason);
+        setIsGameOverOpen(true);
+        recordLeaderboard(outcome.isVictorious, completedYear, nextJoy, nextNetWorth);
+      }
+    } finally {
+      isAdvancingYearRef.current = false;
     }
   };
 
   // Event Choice Handler
   const handleSelectEventChoice = (choice: EventChoice) => {
-    setCash((prev) => Math.max(0, prev + choice.cashDelta));
-    setJoy((prev) => Math.min(100, Math.max(0, prev + choice.joyDelta)));
+    const resolveChoice = pendingEventChoiceResolverRef.current;
+    pendingEventChoiceResolverRef.current = null;
     setIsEventModalOpen(false);
+    if (resolveChoice) {
+      resolveChoice(choice);
+    }
     sound.playCoin();
+  };
+
+  const handleCloseEventModal = () => {
+    const resolveChoice = pendingEventChoiceResolverRef.current;
+    pendingEventChoiceResolverRef.current = null;
+    setIsEventModalOpen(false);
+    if (resolveChoice) {
+      resolveChoice({ id: 'skip', label: 'Решение пропущено', cashDelta: 0, joyDelta: 0 });
+    }
   };
 
   // Record Leaderboard Entry
@@ -1662,13 +2349,59 @@ export default function App() {
     localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(updated));
   };
 
+  const handleCloseTurnSummary = useCallback(() => {
+    setIsTurnSummaryOpen(false);
+
+    const completedYear = lastTurnReport?.year ?? 0;
+    const shouldShowAd =
+      IS_YANDEX_GAMES_BUILD &&
+      Boolean(yandexSdk) &&
+      !isGameOverOpen &&
+      completedYear > 0 &&
+      completedYear % 3 === 0;
+    if (!shouldShowAd || !yandexSdk) return;
+
+    setIsYandexAdShowing(true);
+    yandexSdk.features?.GameplayAPI?.stop?.();
+    yandexGameplayActiveRef.current = false;
+    sound.suspend();
+    void yandexCloudSaveQueueRef.current?.flush(true);
+    void showYandexFullscreenAd(yandexSdk).finally(() => setIsYandexAdShowing(false));
+  }, [lastTurnReport, yandexSdk, isGameOverOpen]);
+
   // Finish Goal Early
   const handleFinishGameEarly = () => {
+    const status = evaluateGoalStatus({
+      mode: gameMode,
+      goal,
+      netWorth,
+      cash,
+      joy,
+      hasApartment,
+      primaryResidenceValue,
+      hasBusiness,
+      passiveIncome: passiveIncomeAnnual,
+      creditCardDebt: creditCard.usedAmount,
+    });
+    if (gameMode !== 'GOAL' || !status.canClaimVictory) return;
+
     setIsVictorious(true);
+    setFailReason(undefined);
     setIsGameOverOpen(true);
     recordLeaderboard(true, year, joy, netWorth);
     sound.playJoy();
   };
+
+  if (IS_YANDEX_GAMES_BUILD && !isSaveHydrated) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-700 font-sans">
+        <div className="rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm text-center">
+          <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-4 border-emerald-100 border-t-emerald-600" />
+          <p className="font-semibold">{GAME_TRANSLATIONS[locale].loadingSave}</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -1678,23 +2411,28 @@ export default function App() {
         setActiveTab={setActiveTab}
         onOpenRules={() => setIsRulesOpen(true)}
         onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
-        onOpenDownload={() => setIsDownloadOpen(true)}
         onOpenTour={() => setIsTourOpen(true)}
         onRestartGame={() => setIsSetupOpen(true)}
         isMuted={isMuted}
         setIsMuted={setIsMuted}
-        year={year}
-        gameMode={
-          gameMode === '10_YEARS'
-            ? 'Классика 10 лет'
-            : gameMode === 'SANDBOX'
-            ? 'Песочница'
-            : goal.title
-        }
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-6 pb-28 sm:pb-32 space-y-5">
+        {balanceMigrationNotice && !IS_YANDEX_GAMES_BUILD && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-950 flex items-start justify-between gap-3">
+            <span>{balanceMigrationNotice}</span>
+            <button
+              type="button"
+              onClick={() => setBalanceMigrationNotice(null)}
+              className="shrink-0 rounded-lg px-2 py-1 font-bold text-amber-800 hover:bg-amber-100"
+              aria-label="Закрыть уведомление об обновлении баланса"
+            >
+              Понятно
+            </button>
+          </div>
+        )}
+
         {/* Sleek Unified Dashboard Status Bar */}
         <StatusBar
           character={character}
@@ -1706,6 +2444,8 @@ export default function App() {
           netWorth={netWorth}
           joy={joy}
           hasApartment={hasApartment}
+          primaryResidenceValue={primaryResidenceValue}
+          creditCardDebt={creditCard.usedAmount}
           hasBusiness={hasBusiness}
           passiveIncome={passiveIncomeAnnual}
           activeCrisis={activeCrisis}
@@ -1717,7 +2457,7 @@ export default function App() {
           <OverviewTab
             cash={cash}
             netWorth={netWorth}
-            annualSalary={annualSalary}
+            annualSalary={effectiveAnnualSalary}
             mandatoryExpensesCost={mandatoryExpensesCost}
             isMandatoryExpensesPaid={isMandatoryExpensesPaid}
             onPayMandatoryExpenses={handlePayMandatoryExpenses}
@@ -1734,7 +2474,6 @@ export default function App() {
             creditCard={creditCard}
             inflationRate={inflationRate}
             onAdvanceYear={handleAdvanceYear}
-            year={year}
             emergencyFundMonths={emergencyFundMonths}
             breakdown={mandatoryBreakdown}
           />
@@ -1768,6 +2507,7 @@ export default function App() {
             keyRate={keyRate}
             inflationRate={inflationRate}
             currentNews={currentNews}
+            isBalancedEconomy={!IS_YANDEX_GAMES_BUILD}
           />
         )}
 
@@ -1791,9 +2531,10 @@ export default function App() {
           <CareerTab
             cash={cash}
             character={character}
-            annualSalary={annualSalary}
+            annualSalary={effectiveAnnualSalary}
             educationTiers={educationTiers}
             onCompleteEducation={handleCompleteEducation}
+            isBalancedEconomy={!IS_YANDEX_GAMES_BUILD}
             burnoutPenaltyActive={joy < 30}
             flowStateActive={joy >= 85}
           />
@@ -1820,6 +2561,7 @@ export default function App() {
             depositsValue={depositsValue}
             cryptoValue={cryptoValue}
             businessValue={businessValue + realEstateValue + businessEmpiresValue}
+            primaryResidenceValue={primaryResidenceValue}
             debtTotal={debtTotal}
             totalDividendsEarned={totalDividendsEarned}
             totalCouponsEarned={totalCouponsEarned}
@@ -1830,7 +2572,7 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 mt-12 py-6 text-xs text-slate-500">
+      <footer className="bg-white border-t border-slate-200 mt-12 py-6 pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
             <span className="font-semibold text-slate-700">ФинПуть</span> · Симулятор финансовой жизни и инвестиций
@@ -1861,17 +2603,20 @@ export default function App() {
       {/* Modals */}
       <TurnSummaryModal
         isOpen={isTurnSummaryOpen}
-        onClose={() => setIsTurnSummaryOpen(false)}
+        onClose={handleCloseTurnSummary}
         report={lastTurnReport}
         inflationRate={inflationRate}
         currentNews={currentNews}
+        isBalancedEconomy={!IS_YANDEX_GAMES_BUILD}
       />
 
       <EventModal
         isOpen={isEventModalOpen}
         event={currentEvent}
         insuranceSavedLoss={eventInsuranceSaved}
-        onClose={() => setIsEventModalOpen(false)}
+        emergencyFundProtectionAmount={eventEmergencyFundSaved}
+        cashDeltaAfterProtection={eventCashDeltaAfterProtection}
+        onClose={handleCloseEventModal}
         onSelectChoice={handleSelectEventChoice}
       />
 
@@ -1883,12 +2628,7 @@ export default function App() {
       <OnboardingTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-        onNavigateTab={(tab) => setActiveTab(tab)}
-      />
-
-      <DownloadModal
-        isOpen={isDownloadOpen}
-        onClose={() => setIsDownloadOpen(false)}
+        onNavigateTab={setActiveTab}
       />
 
       <LeaderboardModal
@@ -1908,11 +2648,14 @@ export default function App() {
         totalCapital={netWorth}
         cashAmount={cash}
         investedAmount={totalInvested}
+        debtAmount={debtTotal}
         finalJoy={joy}
         yearsTaken={year}
         goal={goal}
         mode={gameMode}
-        hasUnpaidCreditCard={creditCard.usedAmount > 0}
+        hasUnpaidCreditCard={
+          creditCard.usedAmount > 0 && creditCard.usedAmount < UNPAID_CREDIT_CARD_GAME_OVER_LIMIT
+        }
         onPlayAgain={() => {
           setIsGameOverOpen(false);
           setIsSetupOpen(true);

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Target, CheckCircle2, AlertCircle } from 'lucide-react';
 import { LifeGoal, GameMode } from '../types/game';
+import { evaluateGoalStatus } from '../utils/gameRules';
 
 interface GoalProgressProps {
   goal: LifeGoal;
@@ -8,6 +9,9 @@ interface GoalProgressProps {
   year: number;
   maxYears?: number; // 10 for 10_YEARS mode
   netWorth: number;
+  cash?: number;
+  primaryResidenceValue?: number;
+  creditCardDebt?: number;
   joy: number;
   hasApartment: boolean;
   hasBusiness: boolean;
@@ -21,28 +25,57 @@ export const GoalProgress: React.FC<GoalProgressProps> = ({
   year,
   maxYears = 10,
   netWorth,
+  cash = 0,
+  primaryResidenceValue = 0,
+  creditCardDebt = 0,
   joy,
   hasApartment,
   hasBusiness,
   passiveIncome,
   onFinishGameEarly,
 }) => {
-  // Check conditions
-  const capitalMet = goal.targetCapital <= 0 || netWorth >= goal.targetCapital;
-  const joyMet = joy >= goal.minJoy;
-  const apartmentMet = !goal.requiredAssets?.hasApartment || hasApartment;
-  const businessMet = !goal.requiredAssets?.hasBusiness || hasBusiness;
-  const passiveMet = !goal.requiredAssets?.passiveIncomeTarget || passiveIncome >= goal.requiredAssets.passiveIncomeTarget;
+  const goalStatus = evaluateGoalStatus({
+    mode,
+    goal,
+    netWorth,
+    cash,
+    joy,
+    hasApartment,
+    primaryResidenceValue,
+    hasBusiness,
+    passiveIncome,
+    creditCardDebt,
+  });
+  const {
+    capitalMet,
+    joyMet,
+    apartmentMet,
+    residenceValueMet,
+    cashReserveMet,
+    businessMet,
+    passiveIncomeMet,
+    creditCardClear,
+  } = goalStatus;
+  const isGoalFulfilled = goalStatus.allRequirementsMet;
 
-  const isGoalFulfilled = capitalMet && joyMet && apartmentMet && businessMet && passiveMet;
-
-  // Calculate percentage completion
-  let totalCriteria = 2; // capital + joy
-  let criteriaMet = (capitalMet ? 1 : Math.min(1, netWorth / Math.max(1, goal.targetCapital))) + (joyMet ? 1 : Math.min(1, joy / goal.minJoy));
+  // Include the universal card-debt rule and every configured goal condition.
+  let totalCriteria = 3; // capital + joy + clear credit card
+  let criteriaMet =
+    (capitalMet ? 1 : Math.max(0, Math.min(1, netWorth / Math.max(1, goal.targetCapital)))) +
+    (joyMet ? 1 : Math.max(0, Math.min(1, joy / Math.max(1, goal.minJoy)))) +
+    (creditCardClear ? 1 : 0);
 
   if (goal.requiredAssets?.hasApartment) {
     totalCriteria += 1;
     if (apartmentMet) criteriaMet += 1;
+  }
+  if (goal.requiredAssets?.primaryResidenceValueTarget) {
+    totalCriteria += 1;
+    criteriaMet += Math.min(1, primaryResidenceValue / goal.requiredAssets.primaryResidenceValueTarget);
+  }
+  if (goal.requiredAssets?.cashReserveTarget) {
+    totalCriteria += 1;
+    criteriaMet += Math.min(1, cash / goal.requiredAssets.cashReserveTarget);
   }
   if (goal.requiredAssets?.hasBusiness) {
     totalCriteria += 1;
@@ -90,7 +123,7 @@ export const GoalProgress: React.FC<GoalProgressProps> = ({
             </div>
           )}
 
-          {isGoalFulfilled && onFinishGameEarly && mode !== '10_YEARS' && (
+          {goalStatus.canClaimVictory && onFinishGameEarly && mode === 'GOAL' && (
             <button
               onClick={onFinishGameEarly}
               className="px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-all animate-pulse"
@@ -156,6 +189,43 @@ export const GoalProgress: React.FC<GoalProgressProps> = ({
           </div>
         )}
 
+        {goal.requiredAssets?.primaryResidenceValueTarget && (
+          <div className="flex items-center gap-1.5">
+            {residenceValueMet ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            )}
+            <span className={residenceValueMet ? 'text-slate-700 font-medium' : 'text-slate-500'}>
+              Жильё от {Math.round(goal.requiredAssets.primaryResidenceValueTarget / 1000000)} млн ₽
+            </span>
+          </div>
+        )}
+
+        {goal.requiredAssets?.cashReserveTarget && (
+          <div className="flex items-center gap-1.5">
+            {cashReserveMet ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            )}
+            <span className={cashReserveMet ? 'text-slate-700 font-medium' : 'text-slate-500'}>
+              Резерв от {Math.round(goal.requiredAssets.cashReserveTarget / 1000000)} млн ₽
+            </span>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5">
+          {creditCardClear ? (
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+          )}
+          <span className={creditCardClear ? 'text-slate-700 font-medium' : 'text-slate-500'}>
+            Нет долга по карте
+          </span>
+        </div>
+
         {goal.requiredAssets?.hasBusiness && (
           <div className="flex items-center gap-1.5">
             {businessMet ? (
@@ -171,13 +241,13 @@ export const GoalProgress: React.FC<GoalProgressProps> = ({
 
         {goal.requiredAssets?.passiveIncomeTarget && (
           <div className="flex items-center gap-1.5">
-            {passiveMet ? (
+            {passiveIncomeMet ? (
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
             ) : (
               <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
             )}
-            <span className={passiveMet ? 'text-slate-700 font-medium' : 'text-slate-500'}>
-              Пассив {Math.round(goal.requiredAssets.passiveIncomeTarget / 1000)}k ₽/год
+            <span className={passiveIncomeMet ? 'text-slate-700 font-medium' : 'text-slate-500'}>
+              Пассивный доход ≥ {Math.round(goal.requiredAssets.passiveIncomeTarget / 1000)}k ₽/год
             </span>
           </div>
         )}

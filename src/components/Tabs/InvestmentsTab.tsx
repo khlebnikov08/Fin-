@@ -32,6 +32,8 @@ import {
   TrendingDown,
 } from 'lucide-react';
 import { sound } from '../../utils/audio';
+import { getEffectiveAnnualRent } from '../../utils/realEstateRules';
+import { maxAffordableStockShares, quoteStockTrade } from '../../utils/marketRules';
 
 interface InvestmentsTabProps {
   cash: number;
@@ -66,6 +68,7 @@ interface InvestmentsTabProps {
   keyRate: number;
   inflationRate: number;
   currentNews?: MacroNews;
+  isBalancedEconomy: boolean;
 }
 
 export type InvestmentSubTab =
@@ -103,6 +106,7 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
   keyRate,
   inflationRate,
   currentNews,
+  isBalancedEconomy,
 }) => {
   const [subTab, setSubTab] = useState<InvestmentSubTab>('stocks');
 
@@ -362,8 +366,15 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
               );
               const isNewlyBought = stock.ownedShares > 0 && sharesEligibleForDiv === 0;
               const chosenQty = Math.max(1, customStockQuantities[stock.id] ?? stockLotSize);
-              const buyCost = chosenQty * stock.price;
-              const maxAffordShares = Math.floor(cash / stock.price);
+              const buyQuote = isBalancedEconomy ? quoteStockTrade(stock, chosenQty, 'BUY') : null;
+              const sellShares = Math.min(stock.ownedShares, chosenQty);
+              const sellQuote = isBalancedEconomy && sellShares > 0
+                ? quoteStockTrade(stock, sellShares, 'SELL')
+                : null;
+              const buyCost = buyQuote?.totalValue ?? chosenQty * stock.price;
+              const maxAffordShares = isBalancedEconomy
+                ? maxAffordableStockShares(stock, cash)
+                : Math.floor(cash / stock.price);
               const annualExpectedDiv = Math.round(stock.ownedShares * stock.price * stock.dividendYield);
 
               return (
@@ -488,7 +499,9 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       <input
                         type="number"
                         min={1}
-                        max={1000000}
+                        max={isBalancedEconomy
+                          ? Math.max(1000000, maxAffordShares, stock.ownedShares)
+                          : 1000000}
                         value={chosenQty}
                         onChange={(e) => {
                           const val = Math.max(1, parseInt(e.target.value, 10) || 1);
@@ -529,6 +542,19 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {buyQuote && buyQuote.shares > 0 && (
+                      <p className="px-1 text-[10px] leading-relaxed text-slate-500">
+                        Покупка: средняя цена около {buyQuote.averageExecutionPrice.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽;
+                        котировка после сделки примерно +{(buyQuote.marketImpact * 100).toFixed(1)}%.
+                      </p>
+                    )}
+                    {sellQuote && (
+                      <p className="px-1 text-[10px] leading-relaxed text-slate-500">
+                        Продажа выбранного объёма: около {sellQuote.totalValue.toLocaleString('ru-RU')} ₽;
+                        котировка примерно {(sellQuote.marketImpact * 100).toFixed(1)}%.
+                      </p>
+                    )}
 
                     {/* Primary Buy and Sell Buttons */}
                     <div className="grid grid-cols-2 gap-1.5">
@@ -635,7 +661,7 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                 Облигации федерального займа (ОФЗ) и Корпоративные бонды
               </h3>
               <p className="text-xs text-slate-500">
-                Гарантированный фиксированный купонный доход каждый год прямо на ваш счет
+                Ежегодные купоны; для корпоративных выпусков и ВДО указан годовой риск дефолта.
               </p>
             </div>
             <div className="text-xs text-slate-500">
@@ -648,6 +674,9 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
               const annualCouponPerBond = Math.round(bond.faceValue * bond.couponRate);
               const totalOwnedCost = bond.ownedCount * bond.faceValue;
               const totalAnnualCoupons = bond.ownedCount * annualCouponPerBond;
+              const annualDefaultRisk = (bond.defaultChance * 100).toLocaleString('ru-RU', {
+                maximumFractionDigits: 2,
+              });
 
               return (
                 <div
@@ -666,14 +695,18 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       </div>
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                          bond.type === 'OFZ'
+                          bond.isDefaulted
+                            ? 'bg-rose-100 text-rose-800'
+                            : bond.type === 'OFZ'
                             ? 'bg-emerald-50 text-emerald-800'
                             : bond.type === 'CORP'
                             ? 'bg-blue-50 text-blue-800'
                             : 'bg-amber-50 text-amber-800'
                         }`}
                       >
-                        {bond.type === 'OFZ'
+                        {bond.isDefaulted
+                          ? 'ДЕФОЛТ'
+                          : bond.type === 'OFZ'
                           ? 'ОФЗ (Гос)'
                           : bond.type === 'CORP'
                           ? 'Корпоративные'
@@ -710,8 +743,10 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       )}
                     </div>
 
-                    <p className="text-[11px] text-slate-500 italic leading-relaxed">
-                      {bond.riskText}
+                    <p className={`text-[11px] italic leading-relaxed ${bond.isDefaulted ? 'text-rose-700 font-semibold' : 'text-slate-500'}`}>
+                      {bond.isDefaulted
+                        ? 'Эмитент объявил дефолт: вложенный номинал потерян, купоны больше не выплачиваются.'
+                        : `${bond.riskText} Риск дефолта выпуска: ${annualDefaultRisk}% в год.`}
                     </p>
                   </div>
 
@@ -721,14 +756,14 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                         sound.playCoin();
                         onBuyBond(bond.id, 10);
                       }}
-                      disabled={cash < bond.faceValue * 10}
+                      disabled={bond.isDefaulted || cash < bond.faceValue * 10}
                       className={`py-2 px-3 rounded-xl text-xs font-semibold transition-colors ${
-                        cash >= bond.faceValue * 10
+                        !bond.isDefaulted && cash >= bond.faceValue * 10
                           ? 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer'
                           : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                       }`}
                     >
-                      Купить 10 шт ({(bond.faceValue * 10).toLocaleString('ru-RU')} ₽)
+                      {bond.isDefaulted ? 'Выпуск закрыт' : `Купить 10 шт (${(bond.faceValue * 10).toLocaleString('ru-RU')} ₽)`}
                     </button>
 
                     <button
@@ -1004,6 +1039,11 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                 <span className="text-teal-800">
                   Покупка любой жилой квартиры автоматически закрывает потребность в аренде и снижает обязательный платеж!
                 </span>
+                {isBalancedEconomy && (
+                  <span className="block text-[11px] text-teal-700 mt-1">
+                    Индексация аренды — до 6% в год; валовая доходность ограничена 9% для жилья и 10% для коммерческих/складских объектов (+1 п.п. после ремонта).
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1020,10 +1060,14 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
               const priceDelta = property.currentPrice - property.prevPrice;
               const percentDelta =
                 property.prevPrice > 0 ? (priceDelta / property.prevPrice) * 100 : 0;
-              const effectiveRent = property.isRenovated
+              const effectiveRent = isBalancedEconomy
+                ? getEffectiveAnnualRent(property)
+                : property.isRenovated
                 ? Math.round(property.annualRentIncome * 1.3)
                 : property.annualRentIncome;
-              const netAnnualYield = (effectiveRent / property.currentPrice) * 100;
+              const netAnnualYield = property.currentPrice > 0
+                ? (effectiveRent / property.currentPrice) * 100
+                : 0;
 
               return (
                 <div
@@ -1096,7 +1140,9 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                       {property.isRenovated && (
                         <div className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Сделан дизайнерский ремонт (+30% к аренде)</span>
+                          <span>{isBalancedEconomy
+                            ? 'Ремонт: до +30% к базовой аренде, действует лимит доходности'
+                            : 'Сделан дизайнерский ремонт (+30% к аренде)'}</span>
                         </div>
                       )}
                     </div>
@@ -1162,10 +1208,12 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h3 className="text-base font-bold text-slate-900 font-heading">
-                Развитие собственной Бизнес-Империи и выход на IPO
+                {isBalancedEconomy ? 'Частный бизнес и операционные риски' : 'Развитие собственной Бизнес-Империи и выход на IPO'}
               </h3>
               <p className="text-xs text-slate-500">
-                Создавайте компании с нуля, масштабируйте до федерального уровня и размещайте акции на Мосбирже!
+                {isBalancedEconomy
+                  ? 'Масштабируйте частную компанию: прибыль зависит от конъюнктуры, а аварии и проверки могут временно остановить работу.'
+                  : 'Создавайте компании с нуля, масштабируйте до федерального уровня и размещайте акции на Мосбирже!'}
               </p>
             </div>
             <div className="text-xs text-slate-500">
@@ -1177,7 +1225,9 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
             {businessEmpires.map((biz) => {
               const currentLevelName = biz.levelNames[biz.level] || 'Не открыт';
               const nextLevel = biz.level + 1;
-              const isNextIpo = nextLevel >= biz.maxLevel;
+              const nextLevelName = biz.levelNames[nextLevel] || `Уровень ${nextLevel}`;
+              const isFinalLevel = nextLevel >= biz.maxLevel;
+              const isNextIpo = !isBalancedEconomy && isFinalLevel;
               const canAffordUpgrade = cash >= biz.upgradeCost;
 
               return (
@@ -1227,12 +1277,12 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                         <span className="text-indigo-900 font-bold">{currentLevelName}</span>
                       </div>
                       <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden flex gap-0.5 p-0.5">
-                        {[1, 2, 3, 4, 5].map((lvl) => (
+                        {Array.from({ length: biz.maxLevel }, (_, index) => index + 1).map((lvl) => (
                           <div
                             key={lvl}
                             className={`flex-1 rounded-full transition-all duration-300 ${
                               biz.level >= lvl
-                                ? lvl === 5
+                                ? lvl === biz.maxLevel
                                   ? 'bg-emerald-500'
                                   : 'bg-indigo-600'
                                 : 'bg-slate-300'
@@ -1257,7 +1307,7 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                           <span className="font-bold text-emerald-600 tabular-nums text-sm">
                             +{biz.annualProfit.toLocaleString('ru-RU')} ₽ / год
                           </span>
-                          {biz.lastProfitMultiplier && biz.lastProfitMultiplier !== 1 && (
+                          {biz.lastProfitMultiplier !== undefined && Math.abs(biz.lastProfitMultiplier - 1) >= 0.01 && (
                             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-indigo-700">
                               {biz.lastProfitMultiplier > 1 ? '+' : ''}{((biz.lastProfitMultiplier - 1) * 100).toFixed(0)}% к тренду
                             </span>
@@ -1271,6 +1321,14 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                           <span className="font-extrabold tabular-nums">
                             +{Math.round(biz.currentValuation * (biz.dividendYield || 0.25)).toLocaleString('ru-RU')} ₽ / год
                           </span>
+                        </div>
+                      )}
+                      {isBalancedEconomy && biz.activeDisruption && (
+                        <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[11px] leading-relaxed text-rose-900">
+                          <strong>Операционный сбой: {biz.activeDisruption.title}.</strong>{' '}
+                          {biz.activeDisruption.description} Прибыль временно составляет{' '}
+                          {Math.round(biz.activeDisruption.profitMultiplier * 100)}% от обычной; ещё{' '}
+                          {biz.activeDisruption.yearsRemaining} {biz.activeDisruption.yearsRemaining === 1 ? 'год' : 'года'} ограничений.
                         </div>
                       )}
                     </div>
@@ -1321,11 +1379,15 @@ export const InvestmentsTab: React.FC<InvestmentsTabProps> = ({
                           <>
                             <ArrowUpRight className="w-4 h-4" />
                             <span>
-                              Масштабировать до Уровня {nextLevel} ({biz.upgradeCost.toLocaleString('ru-RU')} ₽)
+                              Масштабировать до {isBalancedEconomy ? nextLevelName : `Уровня ${nextLevel}`} ({biz.upgradeCost.toLocaleString('ru-RU')} ₽)
                             </span>
                           </>
                         )}
                       </button>
+                    ) : isBalancedEconomy ? (
+                      <div className="w-full py-3 px-4 bg-indigo-50 border border-indigo-200 text-indigo-900 font-bold text-xs sm:text-sm rounded-xl text-center">
+                        Федеральный частный бизнес. Дальнейшая прибыль зависит от операционных результатов и рисков — размещения акций нет.
+                      </div>
                     ) : (
                       <div className="space-y-2">
                         <div className="w-full py-2.5 px-4 bg-emerald-50 border border-emerald-300 text-emerald-900 font-extrabold text-xs sm:text-sm rounded-xl text-center flex items-center justify-between">

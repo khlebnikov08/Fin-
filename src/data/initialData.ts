@@ -68,10 +68,14 @@ export const INITIAL_LIFE_GOALS: LifeGoal[] = [
   {
     id: 'goal_apartment',
     title: 'Мечта: Своё жильё без ипотеки',
-    description: 'Купить комфортную квартиру за 7 000 000 ₽, накопить подушку от 3 000 000 ₽ и сохранить радость 80+.',
+    description: 'Купить собственное жильё стоимостью от 7 000 000 ₽, сохранить резерв не менее 3 000 000 ₽ и радость 80+.',
     targetCapital: 10000000,
     minJoy: 80,
-    requiredAssets: { hasApartment: true },
+    requiredAssets: {
+      hasApartment: true,
+      primaryResidenceValueTarget: 7000000,
+      cashReserveTarget: 3000000,
+    },
   },
   {
     id: 'goal_fire',

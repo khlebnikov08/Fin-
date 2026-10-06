@@ -1,5 +1,27 @@
 import { MacroNews, GameRandomEvent } from '../types/game';
-import { EXPANDED_EVENTS_POOL, pickRichMacroNews } from '../data/richEventsPool';
+import { LOCAL_GAMEPLAY_EVENTS, pickRichMacroNews } from '../data/richEventsPool';
+
+async function requestRemote<T>(endpoint: string, params: object): Promise<T | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return null;
+    return (await response.json()) as T;
+  } catch (error) {
+    console.info('Using local game content (network/AI offline):', error);
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export async function requestAiMacroNews(params: {
   year: number;
@@ -8,33 +30,11 @@ export async function requestAiMacroNews(params: {
   requestedType?: 'RANDOM' | 'CRISIS' | 'BOOM' | 'STAGFLATION' | 'TECH';
   requestedDuration?: 1 | 2 | 3;
 }): Promise<MacroNews> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 sec fast timeout
-
-    const response = await fetch('/api/generate-news', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data.headline) {
-        return data;
-      }
-    }
-  } catch (err) {
-    // Fast graceful fallback
-    console.info('Using local economic engine (network/AI offline):', err);
+  if (import.meta.env.VITE_YANDEX_GAMES !== 'true') {
+    const remoteNews = await requestRemote<MacroNews>('/api/generate-news', params);
+    if (remoteNews?.headline) return remoteNews;
   }
 
-  // Use rich 6-article macro newspaper edition
   let cycleKey: string | undefined;
   if (params.requestedType === 'CRISIS') cycleKey = 'CRISIS';
   else if (params.requestedType === 'BOOM') cycleKey = 'BOOM';
@@ -58,49 +58,27 @@ export async function requestAiGameplayEvent(params: {
   activeCrisisTitle?: string;
   recentEventIds?: string[];
 }): Promise<GameRandomEvent> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5s fast timeout
-
-    const response = await fetch('/api/generate-gameplay-event', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data.title) {
-        return data;
-      }
-    }
-  } catch (err) {
-    console.info('Using local event engine (network/AI offline):', err);
+  if (import.meta.env.VITE_YANDEX_GAMES !== 'true') {
+    const remoteEvent = await requestRemote<GameRandomEvent>('/api/generate-gameplay-event', params);
+    if (remoteEvent?.title) return remoteEvent;
   }
 
-  // Filter procedural events based on assets & recent history (anti-repetition!)
   const recent = params.recentEventIds || [];
-  let eligible = EXPANDED_EVENTS_POOL.filter((ev) => {
-    if (ev.requiresCar && !params.hasCar) return false;
-    if (ev.requiresApartment && !params.hasApartment) return false;
-    if (recent.includes(ev.id)) return false;
-    return true;
+  let eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
+    if (event.requiresCar && !params.hasCar) return false;
+    if (event.requiresApartment && !params.hasApartment) return false;
+    return !recent.includes(event.id);
   });
 
   if (eligible.length === 0) {
-    eligible = EXPANDED_EVENTS_POOL.filter((ev) => {
-      if (ev.requiresCar && !params.hasCar) return false;
-      if (ev.requiresApartment && !params.hasApartment) return false;
+    eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
+      if (event.requiresCar && !params.hasCar) return false;
+      if (event.requiresApartment && !params.hasApartment) return false;
       return true;
     });
   }
 
-  const picked = eligible[Math.floor(Math.random() * eligible.length)] || EXPANDED_EVENTS_POOL[0];
+  const picked = eligible[Math.floor(Math.random() * eligible.length)] || LOCAL_GAMEPLAY_EVENTS[0];
   return {
     ...picked,
     id: `${picked.id}_${Date.now()}`,
