@@ -2181,7 +2181,7 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-6 pb-28 sm:pb-32 space-y-5">
         {/* Sleek Unified Dashboard Status Bar */}
         <StatusBar
           character={character}
@@ -2319,7 +2319,7 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 mt-12 py-6 text-xs text-slate-500">
+      <footer className="bg-white border-t border-slate-200 mt-12 py-6 pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
             <span className="font-semibold text-slate-700">ФинПуть</span> · Симулятор финансовой жизни и инвестиций

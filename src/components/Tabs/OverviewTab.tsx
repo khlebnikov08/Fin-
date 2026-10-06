@@ -428,7 +428,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
       </div>
 
       {/* 3. Turn Advancement Action Button */}
-      <div className="sticky bottom-0 z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-slate-50/95 backdrop-blur-sm border-t border-slate-200 shadow-[0_-8px_16px_rgba(15,23,42,0.06)]">
+      <div className="sticky bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-slate-50/95 backdrop-blur-sm border-t border-slate-200 shadow-[0_-8px_16px_rgba(15,23,42,0.06)]">
         <button
           data-tour="btn-advance-year"
           onClick={() => {
