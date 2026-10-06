@@ -24,6 +24,12 @@ class SoundEffects {
     }
   }
 
+  public suspend() {
+    if (this.ctx?.state === 'running') {
+      void this.ctx.suspend().catch(() => undefined);
+    }
+  }
+
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     localStorage.setItem('finlife_muted', String(this.isMuted));

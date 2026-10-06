@@ -6,7 +6,7 @@ def make_zip(source_dir, output_zip, filter_func=None):
     with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk(source_dir):
             # Exclude node_modules, .git, etc.
-            dirs[:] = [d for d in dirs if d not in ('node_modules', '.git', '.cache', 'dist')]
+            dirs[:] = [d for d in dirs if d not in ('node_modules', '.git', '.cache', 'dist', 'dist-yandex')]
             for file in files:
                 file_path = os.path.join(root, file)
                 rel_path = os.path.relpath(file_path, source_dir)

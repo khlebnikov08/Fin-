@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   BookOpen,
-  Download,
   GraduationCap,
   MoreHorizontal,
   RotateCcw,
@@ -18,7 +17,6 @@ interface HeaderProps {
   setActiveTab: (tab: ActiveTab) => void;
   onOpenRules: () => void;
   onOpenLeaderboard: () => void;
-  onOpenDownload: () => void;
   onOpenTour: () => void;
   onRestartGame: () => void;
   isMuted: boolean;
@@ -30,7 +28,6 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   onOpenRules,
   onOpenLeaderboard,
-  onOpenDownload,
   onOpenTour,
   onRestartGame,
   isMuted,
@@ -171,15 +168,6 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <Trophy className="w-4 h-4" />
                   Рейтинг рекордов
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => runMenuAction(onOpenDownload)}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Download className="w-4 h-4 text-emerald-600" />
-                  Скачать архив
                 </button>
                 <div className="my-1.5 border-t border-slate-100" />
                 <button

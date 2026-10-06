@@ -1,6 +1,7 @@
 node_modules/
 build/
 dist/
+dist-yandex/
 coverage/
 .DS_Store
 *.log

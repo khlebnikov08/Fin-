@@ -53,11 +53,12 @@ import { RulesGuideModal } from './components/Modals/RulesGuideModal';
 import { LeaderboardModal } from './components/Modals/LeaderboardModal';
 import { GameOverModal } from './components/Modals/GameOverModal';
 import { GameSetupModal } from './components/Modals/GameSetupModal';
-import { DownloadModal } from './components/Modals/DownloadModal';
 import { OnboardingTourModal } from './components/Modals/OnboardingTourModal';
 import { calculateMandatoryExpensesBreakdown } from './utils/expenses';
 import { requestAiMacroNews, requestAiGameplayEvent } from './services/aiNewsService';
 import { sound } from './utils/audio';
+import { initializeYandexGames, IS_YANDEX_GAMES_BUILD } from './platform/yandexGames';
+import type { YandexGamesSDK } from './platform/yandexGames';
 import {
   applyCashMovement,
   calculateAnnualPassiveIncome,
@@ -83,12 +84,13 @@ export default function App() {
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isTourOpen, setIsTourOpen] = useState(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
-  const [isDownloadOpen, setIsDownloadOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [isGameOverOpen, setIsGameOverOpen] = useState(false);
   const [isTurnSummaryOpen, setIsTurnSummaryOpen] = useState(false);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [yandexSdk, setYandexSdk] = useState<YandexGamesSDK | null>(null);
+  const yandexGameplayActiveRef = useRef<boolean | null>(null);
   const pendingEventChoiceResolverRef = useRef<((choice: EventChoice) => void) | null>(null);
   const isAdvancingYearRef = useRef(false);
 
@@ -515,6 +517,60 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD) return;
+
+    let cancelled = false;
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener('contextmenu', preventContextMenu);
+
+    void initializeYandexGames().then((sdk) => {
+      if (cancelled || !sdk) return;
+      sdk.features?.LoadingAPI?.ready?.();
+      setYandexSdk(sdk);
+    });
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('contextmenu', preventContextMenu);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !yandexSdk) return;
+
+    const setGameplayActive = (active: boolean) => {
+      if (yandexGameplayActiveRef.current === active) return;
+      yandexGameplayActiveRef.current = active;
+      if (active) {
+        yandexSdk.features?.GameplayAPI?.start?.();
+      } else {
+        yandexSdk.features?.GameplayAPI?.stop?.();
+        sound.suspend();
+      }
+    };
+
+    const updateGameplayState = () => {
+      setGameplayActive(!document.hidden && !isSetupOpen && !isGameOverOpen);
+    };
+    const handleBlur = () => {
+      sound.suspend();
+      setGameplayActive(false);
+    };
+
+    document.addEventListener('visibilitychange', updateGameplayState);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', updateGameplayState);
+    updateGameplayState();
+
+    return () => {
+      document.removeEventListener('visibilitychange', updateGameplayState);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', updateGameplayState);
+      setGameplayActive(false);
+    };
+  }, [yandexSdk, isSetupOpen, isGameOverOpen]);
+
   // Save Game on State Change
   const saveCurrentGame = useCallback(() => {
     try {
@@ -752,7 +808,6 @@ export default function App() {
     setIsRulesOpen(false);
     setIsTourOpen(false);
     setIsLeaderboardOpen(false);
-    setIsDownloadOpen(false);
     setIsSetupOpen(false);
     setIsGameOverOpen(false);
     setIsTurnSummaryOpen(false);
@@ -1927,7 +1982,6 @@ export default function App() {
         setActiveTab={setActiveTab}
         onOpenRules={() => setIsRulesOpen(true)}
         onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
-        onOpenDownload={() => setIsDownloadOpen(true)}
         onOpenTour={() => setIsTourOpen(true)}
         onRestartGame={() => setIsSetupOpen(true)}
         isMuted={isMuted}
@@ -2129,11 +2183,6 @@ export default function App() {
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
         onNavigateTab={setActiveTab}
-      />
-
-      <DownloadModal
-        isOpen={isDownloadOpen}
-        onClose={() => setIsDownloadOpen(false)}
       />
 
       <LeaderboardModal
