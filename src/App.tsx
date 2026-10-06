@@ -56,6 +56,8 @@ import { OnboardingTourModal } from './components/Modals/OnboardingTourModal';
 import { calculateMandatoryExpensesBreakdown } from './utils/expenses';
 import { requestAiMacroNews, requestAiGameplayEvent } from './services/aiNewsService';
 import { sound } from './utils/audio';
+import { GAME_TRANSLATIONS, getGameTranslationsForYandexLanguage } from './i18n';
+import type { GameLocale } from './i18n';
 import {
   createYandexCloudSaveQueue,
   getYandexPlayer,
@@ -96,6 +98,7 @@ export default function App() {
   const [isTurnSummaryOpen, setIsTurnSummaryOpen] = useState(false);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [locale, setLocale] = useState<GameLocale>('ru');
   const [yandexSdk, setYandexSdk] = useState<YandexGamesSDK | null>(null);
   const [isSaveHydrated, setIsSaveHydrated] = useState(false);
   const [isYandexAdShowing, setIsYandexAdShowing] = useState(false);
@@ -363,6 +366,11 @@ export default function App() {
           platformSdk = await initializeYandexGames();
           if (cancelled) return;
           if (platformSdk) {
+            const localizedGame = getGameTranslationsForYandexLanguage(
+              platformSdk.environment?.i18n?.lang
+            );
+            document.documentElement.lang = localizedGame.locale;
+            setLocale(localizedGame.locale);
             setYandexSdk(platformSdk);
             const player = await getYandexPlayer(platformSdk);
             if (cancelled) return;
@@ -2160,7 +2168,7 @@ export default function App() {
       <main className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-700 font-sans">
         <div className="rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm text-center">
           <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-4 border-emerald-100 border-t-emerald-600" />
-          <p className="font-semibold">Загружаем сохранение…</p>
+          <p className="font-semibold">{GAME_TRANSLATIONS[locale].loadingSave}</p>
         </div>
       </main>
     );

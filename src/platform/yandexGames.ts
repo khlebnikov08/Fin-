@@ -21,6 +21,11 @@ interface YandexAdCallbacks {
 }
 
 export interface YandexGamesSDK {
+  environment?: {
+    i18n?: {
+      lang?: string;
+    };
+  };
   features?: {
     LoadingAPI?: {
       ready?: () => void;

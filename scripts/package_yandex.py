@@ -30,6 +30,8 @@ def main() -> None:
     for required_sdk_method in ("getPlayer", "getData", "setData", "showFullscreenAdv"):
         if required_sdk_method not in js_bundle:
             raise SystemExit(f"Yandex integration is missing {required_sdk_method}().")
+    if "i18n" not in js_bundle:
+        raise SystemExit("Yandex integration is missing SDK language detection via environment.i18n.lang.")
 
     with zipfile.ZipFile(OUTPUT, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in files:
