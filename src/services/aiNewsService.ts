@@ -1,5 +1,5 @@
 import { MacroNews, GameRandomEvent } from '../types/game';
-import { EXPANDED_EVENTS_POOL, pickRichMacroNews } from '../data/richEventsPool';
+import { LOCAL_GAMEPLAY_EVENTS, pickRichMacroNews } from '../data/richEventsPool';
 
 async function requestRemote<T>(endpoint: string, params: object): Promise<T | null> {
   const controller = new AbortController();
@@ -64,21 +64,21 @@ export async function requestAiGameplayEvent(params: {
   }
 
   const recent = params.recentEventIds || [];
-  let eligible = EXPANDED_EVENTS_POOL.filter((event) => {
+  let eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
     if (event.requiresCar && !params.hasCar) return false;
     if (event.requiresApartment && !params.hasApartment) return false;
     return !recent.includes(event.id);
   });
 
   if (eligible.length === 0) {
-    eligible = EXPANDED_EVENTS_POOL.filter((event) => {
+    eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
       if (event.requiresCar && !params.hasCar) return false;
       if (event.requiresApartment && !params.hasApartment) return false;
       return true;
     });
   }
 
-  const picked = eligible[Math.floor(Math.random() * eligible.length)] || EXPANDED_EVENTS_POOL[0];
+  const picked = eligible[Math.floor(Math.random() * eligible.length)] || LOCAL_GAMEPLAY_EVENTS[0];
   return {
     ...picked,
     id: `${picked.id}_${Date.now()}`,

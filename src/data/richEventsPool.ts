@@ -1,6 +1,7 @@
 import { GameRandomEvent, MacroNews, NewsArticle } from '../types/game';
+import { RANDOM_EVENTS_POOL } from './initialData';
 
-// 85+ diverse, realistic, exciting life and financial events
+// Curated life and financial events, combined with the original starter events.
 export const EXPANDED_EVENTS_POOL: GameRandomEvent[] = [
   // --- CAREER & BUSINESS ---
   {
@@ -421,7 +422,16 @@ export const EXPANDED_EVENTS_POOL: GameRandomEvent[] = [
   },
 ];
 
-// Rich 6-article newspaper editions tailored to macro cycles
+const expandedEventIds = new Set(EXPANDED_EVENTS_POOL.map((event) => event.id));
+
+// The original starter pool had 11 events that were no longer being selected.
+// Merge them into the active pool, guarding against duplicate IDs.
+export const LOCAL_GAMEPLAY_EVENTS: GameRandomEvent[] = [
+  ...EXPANDED_EVENTS_POOL,
+  ...RANDOM_EVENTS_POOL.filter((event) => !expandedEventIds.has(event.id)),
+];
+
+// Ten locally authored newspaper editions, each with six category-specific articles.
 export const NEWSPAPER_CYCLES: Record<string, {
   headline: string;
   summary: string;
@@ -676,6 +686,302 @@ export const NEWSPAPER_CYCLES: Record<string, {
     ],
   },
 
+  EXPORT_SURGE: {
+    headline: 'Экспортный разворот: новые рынки поддерживают рост компаний',
+    summary: 'Переориентация поставок и устойчивый внешний спрос укрепляют выручку экспортеров и поддерживают деловую активность.',
+    cycleType: 'BOOM',
+    inflationDelta: -0.005,
+    keyRateDelta: -0.015,
+    marketImpact: {
+      stockMarketMultiplier: 1.14,
+      cryptoMultiplier: 1.18,
+      favoredSector: 'Нефть & Газ',
+      hitSector: 'Потребительский',
+      salaryMultiplier: 1.05,
+      businessMultiplier: 1.12,
+    },
+    articles: [
+      {
+        id: 'exp_1',
+        category: 'MACRO',
+        categoryLabel: 'Макроэкономика',
+        title: 'Экспортная выручка поддержала деловую активность и бюджетные доходы',
+        content: 'Новые логистические маршруты помогли компаниям восстановить поставки, а динамика внешнего спроса оказалась лучше ожиданий.',
+      },
+      {
+        id: 'exp_2',
+        category: 'STOCKS',
+        categoryLabel: 'Акции экспортеров',
+        title: 'Нефтегазовые компании увеличили дивидендные выплаты акционерам',
+        content: 'Сильный денежный поток позволил нескольким крупным эмитентам направить часть прибыли на выплаты и развитие производств.',
+      },
+      {
+        id: 'exp_3',
+        category: 'BONDS',
+        categoryLabel: 'Облигации',
+        title: 'Экспортеры выходят на долговой рынок для финансирования расширения',
+        content: 'Инвесторы оценивают не только размер купона, но и устойчивость экспортной выручки и долговую нагрузку компаний.',
+      },
+      {
+        id: 'exp_4',
+        category: 'BANKING',
+        categoryLabel: 'Банковский сектор',
+        title: 'Банки расширили финансирование компаний с валютной выручкой',
+        content: 'Крупные заемщики получили доступ к новым кредитным программам, а банки усилили оценку валютных и расчетных рисков.',
+      },
+      {
+        id: 'exp_5',
+        category: 'REAL_ESTATE',
+        categoryLabel: 'Коммерческая недвижимость',
+        title: 'Складские комплексы у транспортных узлов стали востребованнее',
+        content: 'Операторы ищут помещения для хранения и распределения товаров, поступающих по обновленным маршрутам поставок.',
+      },
+      {
+        id: 'exp_6',
+        category: 'BUSINESS',
+        categoryLabel: 'Малый бизнес',
+        title: 'Региональные поставщики заключают контракты с крупными сетями',
+        content: 'Ритейлеры расширяют линейку местных товаров, но от предпринимателей по-прежнему требуется контролировать себестоимость.',
+      },
+    ],
+  },
+
+  CREDIT_TIGHTENING: {
+    headline: 'Дорогие деньги: банки ужесточают условия кредитования',
+    summary: 'Высокая стоимость фондирования сдерживает спрос на заемные средства и заставляет компании пересматривать инвестиционные планы.',
+    cycleType: 'CRISIS',
+    inflationDelta: 0.025,
+    keyRateDelta: 0.03,
+    marketImpact: {
+      stockMarketMultiplier: 0.86,
+      cryptoMultiplier: 0.78,
+      favoredSector: 'Потребительский',
+      hitSector: 'Девелопмент',
+      businessMultiplier: 0.88,
+    },
+    articles: [
+      {
+        id: 'cred_1',
+        category: 'MACRO',
+        categoryLabel: 'Денежно-кредитная политика',
+        title: 'Регулятор усилил борьбу с инфляцией и пересмотрел прогноз ставки',
+        content: 'Власти рассчитывают охладить спрос без резкого замедления экономики; рынок внимательнее следит за новыми данными по ценам.',
+      },
+      {
+        id: 'cred_2',
+        category: 'STOCKS',
+        categoryLabel: 'Фондовый рынок',
+        title: 'Застройщики и компании с высокой долговой нагрузкой отстали от рынка',
+        content: 'Инвесторы оценивают способность эмитентов обслуживать долг и предпочитают бизнесы со стабильным денежным потоком.',
+      },
+      {
+        id: 'cred_3',
+        category: 'BONDS',
+        categoryLabel: 'Рынок облигаций',
+        title: 'Новые выпуски облигаций предлагают повышенные купоны',
+        content: 'Доходность выросла, но вместе с ней — цена ошибки при выборе заемщика: кредитное качество выпуска важно как никогда.',
+      },
+      {
+        id: 'cred_4',
+        category: 'BANKING',
+        categoryLabel: 'Банки и вклады',
+        title: 'Ставки по депозитам растут вслед за стоимостью денег',
+        content: 'Банки привлекают долгосрочные сбережения, а заемщикам предлагают внимательнее сравнивать полную стоимость кредита.',
+      },
+      {
+        id: 'cred_5',
+        category: 'REAL_ESTATE',
+        categoryLabel: 'Рынок жилья',
+        title: 'Покупатели жилья откладывают сделки из-за дорогой ипотеки',
+        content: 'На рынке становится больше предложений с торгом, тогда как арендный спрос остается заметно устойчивее.',
+      },
+      {
+        id: 'cred_6',
+        category: 'BUSINESS',
+        categoryLabel: 'Бизнес и инвестиции',
+        title: 'Компании переносят проекты, требующие заемного финансирования',
+        content: 'Предприниматели делают ставку на повышение эффективности текущих операций и осторожнее относятся к расширению.',
+      },
+    ],
+  },
+
+  HOUSING_COOLDOWN: {
+    headline: 'Рынок жилья остывает: покупатели ждут более доступных условий',
+    summary: 'Снижение активности сделок меняет баланс между покупкой и арендой, а девелоперы конкурируют за платежеспособный спрос.',
+    cycleType: 'STAGFLATION',
+    inflationDelta: 0.015,
+    keyRateDelta: 0.01,
+    marketImpact: {
+      stockMarketMultiplier: 0.94,
+      cryptoMultiplier: 0.92,
+      favoredSector: 'Финансы & Финтех',
+      hitSector: 'Девелопмент',
+      businessMultiplier: 0.95,
+    },
+    articles: [
+      {
+        id: 'home_1',
+        category: 'MACRO',
+        categoryLabel: 'Экономика домохозяйств',
+        title: 'Семьи пересматривают крупные покупки и внимательнее планируют бюджет',
+        content: 'Опросы показывают рост интереса к накоплениям и аренде жилья вместо покупки в кредит на пике цен.',
+      },
+      {
+        id: 'home_2',
+        category: 'STOCKS',
+        categoryLabel: 'Акции девелоперов',
+        title: 'Девелоперы предлагают скидки и рассрочки для поддержания продаж',
+        content: 'Компании стараются сохранить темпы реализации жилья, одновременно контролируя стоимость строительства и долговую нагрузку.',
+      },
+      {
+        id: 'home_3',
+        category: 'BONDS',
+        categoryLabel: 'Облигации застройщиков',
+        title: 'Кредиторы внимательнее оценивают сроки сдачи новых жилых проектов',
+        content: 'При выборе облигаций инвесторы анализируют продажи, эскроу-счета и график погашения долга эмитента.',
+      },
+      {
+        id: 'home_4',
+        category: 'BANKING',
+        categoryLabel: 'Ипотека и сбережения',
+        title: 'Банки конкурируют за вкладчиков, пока ипотечный спрос сдержан',
+        content: 'Сбережения остаются привлекательной альтернативой для семей, которые решили отложить покупку квартиры.',
+      },
+      {
+        id: 'home_5',
+        category: 'REAL_ESTATE',
+        categoryLabel: 'Недвижимость и аренда',
+        title: 'Арендаторы стали чаще выбирать компактные квартиры рядом с работой',
+        content: 'Спрос смещается к функциональному жилью с удобной транспортной доступностью и понятными коммунальными расходами.',
+      },
+      {
+        id: 'home_6',
+        category: 'BUSINESS',
+        categoryLabel: 'Строительство и услуги',
+        title: 'Ремонтные компании предлагают сезонные пакеты услуг',
+        content: 'Подрядчики адаптируют сметы и графики работ, чтобы удержать клиентов, откладывающих масштабное обновление жилья.',
+      },
+    ],
+  },
+
+  PRODUCTIVITY_BOOM: {
+    headline: 'Больше за меньшее: рост производительности меняет рынок труда',
+    summary: 'Цифровые инструменты помогают компаниям выпускать больше продукции и услуг без пропорционального увеличения затрат.',
+    cycleType: 'TECH_RALLY',
+    inflationDelta: -0.01,
+    keyRateDelta: -0.005,
+    marketImpact: {
+      stockMarketMultiplier: 1.19,
+      cryptoMultiplier: 1.28,
+      favoredSector: 'IT & ИИ',
+      hitSector: 'Металлургия',
+      salaryMultiplier: 1.06,
+      businessMultiplier: 1.14,
+    },
+    articles: [
+      {
+        id: 'prod_1',
+        category: 'MACRO',
+        categoryLabel: 'Производительность',
+        title: 'Инвестиции в автоматизацию ускорили рост выпуска в нескольких отраслях',
+        content: 'Компании внедряют цифровые решения в логистике и управлении запасами, сокращая потери и время обработки заказов.',
+      },
+      {
+        id: 'prod_2',
+        category: 'STOCKS',
+        categoryLabel: 'Технологические компании',
+        title: 'Разработчики корпоративного ПО увеличили выручку от подписок',
+        content: 'Бизнес-клиенты переходят на облачные сервисы и автоматизированную аналитику, но инвесторы внимательно оценивают стоимость роста.',
+      },
+      {
+        id: 'prod_3',
+        category: 'BONDS',
+        categoryLabel: 'Цифровые финансы',
+        title: 'Технологические компании размещают облигации для масштабирования сервисов',
+        content: 'Новые выпуски финансируют развитие инфраструктуры; ключевыми остаются сроки окупаемости и качество денежного потока.',
+      },
+      {
+        id: 'prod_4',
+        category: 'BANKING',
+        categoryLabel: 'Финансовые технологии',
+        title: 'Банки автоматизируют проверки и ускоряют обслуживание клиентов',
+        content: 'Цифровые каналы снижают операционные расходы, а пользователи получают больше сервисов в мобильных приложениях.',
+      },
+      {
+        id: 'prod_5',
+        category: 'REAL_ESTATE',
+        categoryLabel: 'Инфраструктура',
+        title: 'Спрос на дата-центры растет вместе с вычислительными мощностями',
+        content: 'Операторы инвестируют в серверные площадки и энергосбережение, а девелоперы ищут участки с подходящей инфраструктурой.',
+      },
+      {
+        id: 'prod_6',
+        category: 'BUSINESS',
+        categoryLabel: 'Карьера и навыки',
+        title: 'Работодатели повышают спрос на специалистов с цифровыми навыками',
+        content: 'Курсы и практический опыт помогают сотрудникам переходить на более сложные задачи, но требуют времени и инвестиций.',
+      },
+    ],
+  },
+
+  SOFT_LANDING: {
+    headline: 'Мягкая посадка: инфляция замедляется без резкого спада',
+    summary: 'Экономика постепенно охлаждается, сохраняя занятость и потребительскую активность; рынки ищут устойчивые точки роста.',
+    cycleType: 'STANDARD',
+    inflationDelta: 0.0,
+    keyRateDelta: 0.0,
+    marketImpact: {
+      stockMarketMultiplier: 1.10,
+      cryptoMultiplier: 1.04,
+      favoredSector: 'Потребительский',
+      businessMultiplier: 1.07,
+    },
+    articles: [
+      {
+        id: 'soft_1',
+        category: 'MACRO',
+        categoryLabel: 'Макроэкономика',
+        title: 'Темпы роста цен снизились, а деловая активность остается устойчивой',
+        content: 'Данные по спросу и занятости указывают на постепенную нормализацию экономики без резкого сокращения производства.',
+      },
+      {
+        id: 'soft_2',
+        category: 'STOCKS',
+        categoryLabel: 'Фондовый рынок',
+        title: 'Компании внутреннего спроса отчитались о стабильных продажах',
+        content: 'Потребительский сектор поддерживают умеренный рост доходов и осторожное восстановление крупных покупок.',
+      },
+      {
+        id: 'soft_3',
+        category: 'BONDS',
+        categoryLabel: 'Облигации',
+        title: 'Инвесторы распределяют вложения между короткими и средними выпусками',
+        content: 'Участники рынка фиксируют доходность, сохраняя гибкость на случай изменения инфляции и политики регулятора.',
+      },
+      {
+        id: 'soft_4',
+        category: 'BANKING',
+        categoryLabel: 'Банковский сектор',
+        title: 'Банки постепенно корректируют ставки по новым вкладам',
+        content: 'Условия различаются по срокам и суммам, поэтому вкладчикам важно учитывать доступность средств и страхование.',
+      },
+      {
+        id: 'soft_5',
+        category: 'REAL_ESTATE',
+        categoryLabel: 'Рынок недвижимости',
+        title: 'Покупатели возвращаются к планированию сделок на несколько лет вперед',
+        content: 'Рынок остается избирательным: востребованы объекты с понятной стоимостью владения и хорошей инфраструктурой.',
+      },
+      {
+        id: 'soft_6',
+        category: 'BUSINESS',
+        categoryLabel: 'Предпринимательство',
+        title: 'Небольшие компании открывают новые точки после периода экономии',
+        content: 'Бизнес тестирует спрос постепенно, предпочитая небольшие вложения и быстрый контроль результатов.',
+      },
+    ],
+  },
+
   STANDARD: {
     headline: 'Стабильное равновесие: Предсказуемый темп и контролируемая инфляция',
     summary: 'Финансовые рынки находятся в фазе сбалансированного умеренного развития без резких макроэкономических потрясений.',
@@ -735,11 +1041,16 @@ export const NEWSPAPER_CYCLES: Record<string, {
   },
 };
 
+let lastRandomEditionKey: string | undefined;
+
 export function pickRichMacroNews(cycleKey?: string): MacroNews {
   const keys = Object.keys(NEWSPAPER_CYCLES);
-  const selectedKey = cycleKey && NEWSPAPER_CYCLES[cycleKey]
-    ? cycleKey
-    : keys[Math.floor(Math.random() * keys.length)];
+  const requestedKey = cycleKey && NEWSPAPER_CYCLES[cycleKey] ? cycleKey : undefined;
+  const availableKeys = requestedKey
+    ? [requestedKey]
+    : keys.filter((key) => key !== lastRandomEditionKey);
+  const selectedKey = availableKeys[Math.floor(Math.random() * availableKeys.length)] || keys[0];
+  lastRandomEditionKey = selectedKey;
 
   const template = NEWSPAPER_CYCLES[selectedKey];
   const isHawkish = template.cycleType === 'CRISIS' || template.cycleType === 'STAGFLATION';

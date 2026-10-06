@@ -1,6 +1,5 @@
 from pathlib import Path
 import re
-import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +27,9 @@ def main() -> None:
         raise SystemExit("Yandex build contains a live AI endpoint; interactive AI must stay disabled.")
     if "/sdk.js" not in js_bundle:
         raise SystemExit("Yandex Games SDK loader is missing from the build.")
+    for required_sdk_method in ("getPlayer", "getData", "setData", "showFullscreenAdv"):
+        if required_sdk_method not in js_bundle:
+            raise SystemExit(f"Yandex integration is missing {required_sdk_method}().")
 
     with zipfile.ZipFile(OUTPUT, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in files:

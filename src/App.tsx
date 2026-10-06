@@ -35,10 +35,9 @@ import {
   INITIAL_INSURANCES,
   INITIAL_EDUCATION_TIERS,
   OPTIONAL_EXPENSES_POOL,
-  RANDOM_EVENTS_POOL,
   MACRO_NEWS_POOL,
 } from './data/initialData';
-import { EXPANDED_EVENTS_POOL, pickRichMacroNews } from './data/richEventsPool';
+import { LOCAL_GAMEPLAY_EVENTS, pickRichMacroNews } from './data/richEventsPool';
 import { Header, ActiveTab } from './components/Header';
 import { StatusBar } from './components/StatusBar';
 import { OverviewTab } from './components/Tabs/OverviewTab';
@@ -57,8 +56,15 @@ import { OnboardingTourModal } from './components/Modals/OnboardingTourModal';
 import { calculateMandatoryExpensesBreakdown } from './utils/expenses';
 import { requestAiMacroNews, requestAiGameplayEvent } from './services/aiNewsService';
 import { sound } from './utils/audio';
-import { initializeYandexGames, IS_YANDEX_GAMES_BUILD } from './platform/yandexGames';
-import type { YandexGamesSDK } from './platform/yandexGames';
+import {
+  createYandexCloudSaveQueue,
+  getYandexPlayer,
+  initializeYandexGames,
+  IS_YANDEX_GAMES_BUILD,
+  loadYandexCloudSave,
+  showYandexFullscreenAd,
+} from './platform/yandexGames';
+import type { YandexCloudSaveQueue, YandexGamesSDK } from './platform/yandexGames';
 import {
   applyCashMovement,
   calculateAnnualPassiveIncome,
@@ -77,6 +83,7 @@ import {
 
 const STORAGE_KEY = 'finlife_save_v1';
 const LEADERBOARD_KEY = 'finlife_leaderboard_v1';
+const PREFER_YANDEX_CLOUD_ON_RESTORE_KEY = 'finlife_yandex_cloud_restore_after_account_selection';
 
 export default function App() {
   // Navigation & Modals
@@ -90,7 +97,12 @@ export default function App() {
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [yandexSdk, setYandexSdk] = useState<YandexGamesSDK | null>(null);
+  const [isSaveHydrated, setIsSaveHydrated] = useState(false);
+  const [isYandexAdShowing, setIsYandexAdShowing] = useState(false);
+  const [isYandexPlatformPaused, setIsYandexPlatformPaused] = useState(false);
   const yandexGameplayActiveRef = useRef<boolean | null>(null);
+  const yandexCloudSaveQueueRef = useRef<YandexCloudSaveQueue | null>(null);
+  const hasActiveGameRef = useRef(false);
   const pendingEventChoiceResolverRef = useRef<((choice: EventChoice) => void) | null>(null);
   const isAdvancingYearRef = useRef(false);
 
@@ -317,224 +329,277 @@ export default function App() {
     setMandatoryExpensesCost(mandatoryBreakdown.total);
   }, [mandatoryBreakdown.total]);
 
-  // Load Saved Game & Leaderboard
+  // Restore local progress first, then prefer a newer Yandex cloud snapshot.
   useEffect(() => {
-    try {
-      const savedLb = localStorage.getItem(LEADERBOARD_KEY);
-      if (savedLb) {
-        setLeaderboard(JSON.parse(savedLb));
-      }
+    let cancelled = false;
 
-      const savedGame = localStorage.getItem(STORAGE_KEY);
-      if (savedGame) {
-        const data = JSON.parse(savedGame);
-        setPlayerName(data.playerName || 'Инвестор');
-        const loadedMode: GameMode = data.gameMode || 'GOAL';
-        const storedYear = Number(data.year) || 1;
-        const legacySave = !Object.hasOwn(data, 'primaryResidenceValue');
-        const legacyClassicFinished =
-          legacySave && loadedMode === '10_YEARS' && storedYear > 10 && !Object.hasOwn(data, 'isGameOverOpen');
-        const loadedCardDebt = Number(data.creditCard?.usedAmount) || 0;
-        const loadedCardDebtReachedGameOver = loadedCardDebt >= UNPAID_CREDIT_CARD_GAME_OVER_LIMIT;
-        const loadedGoal: LifeGoal =
-          data.goal || (loadedMode === '10_YEARS' ? INITIAL_LIFE_GOALS[0] : INITIAL_LIFE_GOALS[1]);
-        setGameMode(loadedMode);
-        setGoal(loadedGoal);
-        setCharacter(data.character || INITIAL_CHARACTERS[0]);
-        setYear(legacyClassicFinished ? 10 : storedYear);
-        setIsGameOverOpen(
-          Boolean(data.isGameOverOpen) || legacyClassicFinished || loadedCardDebtReachedGameOver
-        );
-        setIsVictorious(loadedCardDebtReachedGameOver ? false : Boolean(data.isVictorious));
-        setFailReason(
-          loadedCardDebtReachedGameOver ? UNPAID_CREDIT_CARD_GAME_OVER_REASON : data.failReason
-        );
-        let loadedCash = data.cash ?? 1600000;
-        const loadedMandatory = data.mandatoryExpensesCost || 420000;
-        if (data.year === 1 && !data.isMandatoryExpensesPaid && loadedCash < loadedMandatory) {
-          loadedCash += data.annualSalary || 1200000;
+    const restoreSave = async () => {
+      let platformSdk: YandexGamesSDK | null = null;
+      try {
+        const savedLb = localStorage.getItem(LEADERBOARD_KEY);
+        if (savedLb) {
+          setLeaderboard(JSON.parse(savedLb));
         }
-        setCash(loadedCash);
-        setJoy(data.joy ?? 75);
-        setAnnualSalary(data.annualSalary || 1200000);
-        setMandatoryExpensesCost(loadedMandatory);
-        setIsMandatoryExpensesPaid(data.isMandatoryExpensesPaid || false);
-        setHasCar(Boolean(data.hasCar));
-        const loadedHasApartment = Boolean(data.hasApartment);
-        setHasApartment(loadedHasApartment);
-        // Older saves stored only the ownership flag; preserve their purchased home value.
-        setPrimaryResidenceValue(
-          Number.isFinite(data.primaryResidenceValue)
-            ? Math.max(0, data.primaryResidenceValue)
-            : loadedHasApartment
-            ? 7200000
-            : 0
-        );
-        setRecentEventIds(data.recentEventIds || []);
-        setInflationRate(data.inflationRate || 0.08);
-        setKeyRate(data.keyRate || 0.12);
-        setCurrentNews(data.currentNews || MACRO_NEWS_POOL[0]);
-        setNewsHistory(data.newsHistory || []);
 
-        const savedStocks: StockAsset[] = data.stocks || [];
-        const initialStockIds = new Set(INITIAL_STOCKS.map((stock) => stock.id));
-        const mergedStocks = [
-          ...INITIAL_STOCKS.map((initialStock) => {
-            const savedStock = savedStocks.find((stock) => stock.id === initialStock.id);
-            return savedStock
-              ? {
-                  ...initialStock,
-                  ...savedStock,
-                  heldSharesLastYear: savedStock.heldSharesLastYear ?? savedStock.ownedShares,
-                }
-              : initialStock;
-          }),
-          ...savedStocks
-            .filter((stock) => !initialStockIds.has(stock.id))
-            .map((stock) => ({
-              ...stock,
-              heldSharesLastYear: stock.heldSharesLastYear ?? stock.ownedShares,
-            })),
-        ];
-        const loadedBonds: BondAsset[] = data.bonds || INITIAL_BONDS;
-        const loadedDeposits: BankDeposit[] = data.deposits || [];
-        const loadedCrypto: CryptoAsset[] = data.crypto || INITIAL_CRYPTO;
-        const loadedBusinessAssets: BusinessOrRealEstate[] =
-          data.businessAssets || INITIAL_BUSINESS_AND_REAL_ESTATE;
-        const loadedRealEstate: RealEstateProperty[] = data.realEstate || INITIAL_REAL_ESTATE;
-        const loadedBusinessEmpires: BusinessEmpire[] = data.businessEmpires || INITIAL_BUSINESS_EMPIRES;
-        setStocks(mergedStocks);
-        setBonds(loadedBonds);
-        setDeposits(loadedDeposits);
-        setCrypto(loadedCrypto);
-        setBusinessAssets(loadedBusinessAssets);
-        setRealEstate(loadedRealEstate);
-        setBusinessEmpires(loadedBusinessEmpires);
-        setInsurances(data.insurances || INITIAL_INSURANCES);
-        setEducationTiers(data.educationTiers || INITIAL_EDUCATION_TIERS);
-        const loadedCreditCard: CreditCard = data.creditCard || {
-          limit: 600000,
-          usedAmount: 0,
-          gracePeriodYearsRemaining: 1,
-          interestRate: 0.28,
-          penaltyRate: 0.1,
-          isOverdue: false,
-        };
-        const loadedLoans: Loan[] = data.loans || [];
-        setCreditCard(loadedCreditCard);
-        setLoans(loadedLoans);
-        setDebitCard(
-          data.debitCard || {
-            active: false,
-            name: 'Кэшбэк Карта 3%',
-            cashbackRate: 0.03,
-            annualFee: 1500,
-            benefitDescription: '',
+        let data: Record<string, any> | null = null;
+        const savedGame = localStorage.getItem(STORAGE_KEY);
+        if (savedGame) {
+          try {
+            data = JSON.parse(savedGame) as Record<string, any>;
+          } catch {
+            localStorage.removeItem(STORAGE_KEY);
           }
-        );
-        setOptionalExpenses(data.optionalExpenses || [OPTIONAL_EXPENSES_POOL[0], OPTIONAL_EXPENSES_POOL[1]]);
-        setAcceptedOptionalIds(data.acceptedOptionalIds || []);
-        setDeclinedOptionalIds(data.declinedOptionalIds || []);
-        setTotalDividendsEarned(data.totalDividendsEarned || 0);
-        setTotalCouponsEarned(data.totalCouponsEarned || 0);
-        setTotalSalaryEarned(data.totalSalaryEarned || 1200000);
-        const loadedHistory: YearHistoryPoint[] = data.history || [
-          { year: 0, netWorth: 350000, cash: 350000, invested: 0, joy: 75, passiveIncome: 0 },
-        ];
-        setHistory(
-          legacySave
-            ? loadedHistory.map((point) => ({ ...point, year: Math.max(0, point.year - 1) }))
-            : loadedHistory
-        );
+        }
 
-        if (legacyClassicFinished) {
-          const migratedResidenceValue = Number.isFinite(data.primaryResidenceValue)
-            ? Math.max(0, data.primaryResidenceValue)
-            : loadedHasApartment
-            ? 7200000
-            : 0;
-          const loadedDebt =
-            loadedLoans.reduce((sum, loan) => sum + loan.remainingDebt, 0) + loadedCreditCard.usedAmount;
-          const finalCapital = calculateNetWorth(
-            loadedCash,
-            calculateInvestedAssetsValue({
+        if (IS_YANDEX_GAMES_BUILD) {
+          let preferCloudSave = false;
+          try {
+            preferCloudSave =
+              sessionStorage.getItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY) === 'true';
+          } catch {
+            // Session storage may be unavailable in restricted browser contexts.
+          }
+
+          platformSdk = await initializeYandexGames();
+          if (cancelled) return;
+          if (platformSdk) {
+            setYandexSdk(platformSdk);
+            const player = await getYandexPlayer(platformSdk);
+            if (cancelled) return;
+            if (player) {
+              yandexCloudSaveQueueRef.current = createYandexCloudSaveQueue(player);
+              const cloudSave = await loadYandexCloudSave(player);
+              if (cancelled) return;
+              const localSavedAt = Number(data?._savedAt) || 0;
+              if (cloudSave && (preferCloudSave || cloudSave.savedAt > localSavedAt)) {
+                data = cloudSave.payload;
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+              }
+              try {
+                sessionStorage.removeItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY);
+              } catch {
+                // Ignore restricted session storage.
+              }
+            }
+          }
+        }
+
+        if (cancelled) return;
+        if (data) {
+          hasActiveGameRef.current = true;
+          if (Array.isArray(data.leaderboard)) setLeaderboard(data.leaderboard);
+          setPlayerName(data.playerName || 'Инвестор');
+          const loadedMode: GameMode = data.gameMode || 'GOAL';
+          const storedYear = Number(data.year) || 1;
+          const legacySave = !Object.hasOwn(data, 'primaryResidenceValue');
+          const legacyClassicFinished =
+            legacySave && loadedMode === '10_YEARS' && storedYear > 10 && !Object.hasOwn(data, 'isGameOverOpen');
+          const loadedCardDebt = Number(data.creditCard?.usedAmount) || 0;
+          const loadedCardDebtReachedGameOver = loadedCardDebt >= UNPAID_CREDIT_CARD_GAME_OVER_LIMIT;
+          const loadedGoal: LifeGoal =
+            data.goal || (loadedMode === '10_YEARS' ? INITIAL_LIFE_GOALS[0] : INITIAL_LIFE_GOALS[1]);
+          setGameMode(loadedMode);
+          setGoal(loadedGoal);
+          setCharacter(data.character || INITIAL_CHARACTERS[0]);
+          setYear(legacyClassicFinished ? 10 : storedYear);
+          setIsGameOverOpen(
+            Boolean(data.isGameOverOpen) || legacyClassicFinished || loadedCardDebtReachedGameOver
+          );
+          setIsVictorious(loadedCardDebtReachedGameOver ? false : Boolean(data.isVictorious));
+          setFailReason(
+            loadedCardDebtReachedGameOver ? UNPAID_CREDIT_CARD_GAME_OVER_REASON : data.failReason
+          );
+          let loadedCash = data.cash ?? 1600000;
+          const loadedMandatory = data.mandatoryExpensesCost || 420000;
+          if (data.year === 1 && !data.isMandatoryExpensesPaid && loadedCash < loadedMandatory) {
+            loadedCash += data.annualSalary || 1200000;
+          }
+          setCash(loadedCash);
+          setJoy(data.joy ?? 75);
+          setAnnualSalary(data.annualSalary || 1200000);
+          setMandatoryExpensesCost(loadedMandatory);
+          setIsMandatoryExpensesPaid(data.isMandatoryExpensesPaid || false);
+          setHasCar(Boolean(data.hasCar));
+          const loadedHasApartment = Boolean(data.hasApartment);
+          setHasApartment(loadedHasApartment);
+          // Older saves stored only the ownership flag; preserve their purchased home value.
+          setPrimaryResidenceValue(
+            Number.isFinite(data.primaryResidenceValue)
+              ? Math.max(0, data.primaryResidenceValue)
+              : loadedHasApartment
+              ? 7200000
+              : 0
+          );
+          setRecentEventIds(data.recentEventIds || []);
+          setInflationRate(data.inflationRate || 0.08);
+          setKeyRate(data.keyRate || 0.12);
+          setCurrentNews(data.currentNews || MACRO_NEWS_POOL[0]);
+          setActiveCrisis(data.activeCrisis || null);
+          setNewsHistory(data.newsHistory || []);
+          setPendingTaxRefund(data.pendingTaxRefund || 0);
+
+          const savedStocks: StockAsset[] = data.stocks || [];
+          const initialStockIds = new Set(INITIAL_STOCKS.map((stock) => stock.id));
+          const mergedStocks = [
+            ...INITIAL_STOCKS.map((initialStock) => {
+              const savedStock = savedStocks.find((stock) => stock.id === initialStock.id);
+              return savedStock
+                ? {
+                    ...initialStock,
+                    ...savedStock,
+                    heldSharesLastYear: savedStock.heldSharesLastYear ?? savedStock.ownedShares,
+                  }
+                : initialStock;
+            }),
+            ...savedStocks
+              .filter((stock) => !initialStockIds.has(stock.id))
+              .map((stock) => ({
+                ...stock,
+                heldSharesLastYear: stock.heldSharesLastYear ?? stock.ownedShares,
+              })),
+          ];
+          const loadedBonds: BondAsset[] = data.bonds || INITIAL_BONDS;
+          const loadedDeposits: BankDeposit[] = data.deposits || [];
+          const loadedCrypto: CryptoAsset[] = data.crypto || INITIAL_CRYPTO;
+          const loadedBusinessAssets: BusinessOrRealEstate[] =
+            data.businessAssets || INITIAL_BUSINESS_AND_REAL_ESTATE;
+          const loadedRealEstate: RealEstateProperty[] = data.realEstate || INITIAL_REAL_ESTATE;
+          const loadedBusinessEmpires: BusinessEmpire[] = data.businessEmpires || INITIAL_BUSINESS_EMPIRES;
+          setStocks(mergedStocks);
+          setBonds(loadedBonds);
+          setDeposits(loadedDeposits);
+          setCrypto(loadedCrypto);
+          setBusinessAssets(loadedBusinessAssets);
+          setRealEstate(loadedRealEstate);
+          setBusinessEmpires(loadedBusinessEmpires);
+          setInsurances(data.insurances || INITIAL_INSURANCES);
+          setEducationTiers(data.educationTiers || INITIAL_EDUCATION_TIERS);
+          const loadedCreditCard: CreditCard = data.creditCard || {
+            limit: 600000,
+            usedAmount: 0,
+            gracePeriodYearsRemaining: 1,
+            interestRate: 0.28,
+            penaltyRate: 0.1,
+            isOverdue: false,
+          };
+          const loadedLoans: Loan[] = data.loans || [];
+          setCreditCard(loadedCreditCard);
+          setLoans(loadedLoans);
+          setDebitCard(
+            data.debitCard || {
+              active: false,
+              name: 'Кэшбэк Карта 3%',
+              cashbackRate: 0.03,
+              annualFee: 1500,
+              benefitDescription: '',
+            }
+          );
+          setOptionalExpenses(data.optionalExpenses || [OPTIONAL_EXPENSES_POOL[0], OPTIONAL_EXPENSES_POOL[1]]);
+          setAcceptedOptionalIds(data.acceptedOptionalIds || []);
+          setDeclinedOptionalIds(data.declinedOptionalIds || []);
+          setTotalDividendsEarned(data.totalDividendsEarned || 0);
+          setTotalCouponsEarned(data.totalCouponsEarned || 0);
+          setTotalSalaryEarned(data.totalSalaryEarned || 1200000);
+          const loadedHistory: YearHistoryPoint[] = data.history || [
+            { year: 0, netWorth: 350000, cash: 350000, invested: 0, joy: 75, passiveIncome: 0 },
+          ];
+          setHistory(
+            legacySave
+              ? loadedHistory.map((point) => ({ ...point, year: Math.max(0, point.year - 1) }))
+              : loadedHistory
+          );
+
+          if (legacyClassicFinished) {
+            const migratedResidenceValue = Number.isFinite(data.primaryResidenceValue)
+              ? Math.max(0, data.primaryResidenceValue)
+              : loadedHasApartment
+              ? 7200000
+              : 0;
+            const loadedDebt =
+              loadedLoans.reduce((sum, loan) => sum + loan.remainingDebt, 0) + loadedCreditCard.usedAmount;
+            const finalCapital = calculateNetWorth(
+              loadedCash,
+              calculateInvestedAssetsValue({
+                stocks: mergedStocks,
+                bonds: loadedBonds,
+                deposits: loadedDeposits,
+                crypto: loadedCrypto,
+                businessAssets: loadedBusinessAssets,
+                realEstate: loadedRealEstate,
+                businessEmpires: loadedBusinessEmpires,
+                primaryResidenceValue: migratedResidenceValue,
+              }),
+              loadedDebt
+            );
+            const finalPassiveIncome = calculateAnnualPassiveIncome({
               stocks: mergedStocks,
               bonds: loadedBonds,
               deposits: loadedDeposits,
-              crypto: loadedCrypto,
               businessAssets: loadedBusinessAssets,
               realEstate: loadedRealEstate,
               businessEmpires: loadedBusinessEmpires,
+            });
+            const finalStatus = evaluateGoalStatus({
+              mode: loadedMode,
+              goal: loadedGoal,
+              netWorth: finalCapital,
+              cash: loadedCash,
+              joy: data.joy ?? 75,
+              hasApartment: loadedHasApartment,
               primaryResidenceValue: migratedResidenceValue,
-            }),
-            loadedDebt
-          );
-          const finalPassiveIncome = calculateAnnualPassiveIncome({
-            stocks: mergedStocks,
-            bonds: loadedBonds,
-            deposits: loadedDeposits,
-            businessAssets: loadedBusinessAssets,
-            realEstate: loadedRealEstate,
-            businessEmpires: loadedBusinessEmpires,
-          });
-          const finalStatus = evaluateGoalStatus({
-            mode: loadedMode,
-            goal: loadedGoal,
-            netWorth: finalCapital,
-            cash: loadedCash,
-            joy: data.joy ?? 75,
-            hasApartment: loadedHasApartment,
-            primaryResidenceValue: migratedResidenceValue,
-            hasBusiness:
-              loadedBusinessAssets.some((asset) => asset.type === 'BUSINESS' && asset.owned) ||
-              loadedBusinessEmpires.some((business) => business.owned),
-            passiveIncome: finalPassiveIncome,
-            creditCardDebt: loadedCreditCard.usedAmount,
-          });
-          setIsVictorious(finalStatus.canClaimVictory);
-          setFailReason(
-            finalStatus.canClaimVictory
-              ? undefined
-              : 'Итоговые условия сохранённой классической партии не выполнены.'
-          );
+              hasBusiness:
+                loadedBusinessAssets.some((asset) => asset.type === 'BUSINESS' && asset.owned) ||
+                loadedBusinessEmpires.some((business) => business.owned),
+              passiveIncome: finalPassiveIncome,
+              creditCardDebt: loadedCreditCard.usedAmount,
+            });
+            setIsVictorious(finalStatus.canClaimVictory);
+            setFailReason(
+              finalStatus.canClaimVictory
+                ? undefined
+                : 'Итоговые условия сохранённой классической партии не выполнены.'
+            );
+          }
+
+          if (loadedCardDebtReachedGameOver) {
+            setIsGameOverOpen(true);
+            setIsVictorious(false);
+            setFailReason(UNPAID_CREDIT_CARD_GAME_OVER_REASON);
+          }
+        } else {
+          setIsSetupOpen(true);
         }
 
-        if (loadedCardDebtReachedGameOver) {
-          setIsGameOverOpen(true);
-          setIsVictorious(false);
-          setFailReason(UNPAID_CREDIT_CARD_GAME_OVER_REASON);
+        const tourDone = localStorage.getItem('finlife_tour_completed');
+        if (!tourDone) {
+          setIsTourOpen(true);
         }
-      } else {
+      } catch (error) {
+        console.warn('Game save restoration failed; starting with local defaults:', error);
         setIsSetupOpen(true);
+      } finally {
+        if (!cancelled) setIsSaveHydrated(true);
       }
+    };
 
-      const tourDone = localStorage.getItem('finlife_tour_completed');
-      if (!tourDone) {
-        setIsTourOpen(true);
-      }
-    } catch {
-      setIsSetupOpen(true);
-    }
+    void restoreSave();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
     if (!IS_YANDEX_GAMES_BUILD) return;
 
-    let cancelled = false;
     const preventContextMenu = (event: MouseEvent) => event.preventDefault();
     document.addEventListener('contextmenu', preventContextMenu);
-
-    void initializeYandexGames().then((sdk) => {
-      if (cancelled || !sdk) return;
-      sdk.features?.LoadingAPI?.ready?.();
-      setYandexSdk(sdk);
-    });
-
-    return () => {
-      cancelled = true;
-      document.removeEventListener('contextmenu', preventContextMenu);
-    };
+    return () => document.removeEventListener('contextmenu', preventContextMenu);
   }, []);
+
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !yandexSdk || !isSaveHydrated) return;
+    yandexSdk.features?.LoadingAPI?.ready?.();
+  }, [yandexSdk, isSaveHydrated]);
 
   useEffect(() => {
     if (!IS_YANDEX_GAMES_BUILD || !yandexSdk) return;
@@ -551,30 +616,96 @@ export default function App() {
     };
 
     const updateGameplayState = () => {
-      setGameplayActive(!document.hidden && !isSetupOpen && !isGameOverOpen);
+      const canPlay =
+        isSaveHydrated &&
+        !document.hidden &&
+        !isSetupOpen &&
+        !isGameOverOpen &&
+        !isTurnSummaryOpen &&
+        !isYandexAdShowing &&
+        !isYandexPlatformPaused;
+      setGameplayActive(canPlay);
     };
     const handleBlur = () => {
       sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
       setGameplayActive(false);
     };
+    const handleFocus = () => {
+      setIsYandexPlatformPaused(false);
+      updateGameplayState();
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        void yandexCloudSaveQueueRef.current?.flush(true);
+      } else {
+        setIsYandexPlatformPaused(false);
+      }
+      updateGameplayState();
+    };
+    const handleSdkPause = () => {
+      sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
+      setIsYandexPlatformPaused(true);
+    };
+    const handleSdkResume = () => setIsYandexPlatformPaused(false);
+    const handleAccountSelectionOpened = () => {
+      sound.suspend();
+      void yandexCloudSaveQueueRef.current?.flush(true);
+      setIsYandexPlatformPaused(true);
+    };
+    const handleAccountSelectionClosed = () => {
+      try {
+        sessionStorage.setItem(PREFER_YANDEX_CLOUD_ON_RESTORE_KEY, 'true');
+      } catch {
+        // The reload still lets the SDK create a fresh Player object.
+      }
+      window.location.reload();
+    };
 
-    document.addEventListener('visibilitychange', updateGameplayState);
+    const unsubscribePause = yandexSdk.on?.('game_api_pause', handleSdkPause);
+    const unsubscribeResume = yandexSdk.on?.('game_api_resume', handleSdkResume);
+    const accountSelectionOpenedEvent = yandexSdk.EVENTS?.ACCOUNT_SELECTION_DIALOG_OPENED;
+    const accountSelectionClosedEvent = yandexSdk.EVENTS?.ACCOUNT_SELECTION_DIALOG_CLOSED;
+    const unsubscribeAccountSelectionOpened = accountSelectionOpenedEvent
+      ? yandexSdk.on?.(accountSelectionOpenedEvent, handleAccountSelectionOpened)
+      : undefined;
+    const unsubscribeAccountSelectionClosed = accountSelectionClosedEvent
+      ? yandexSdk.on?.(accountSelectionClosedEvent, handleAccountSelectionClosed)
+      : undefined;
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleBlur);
-    window.addEventListener('focus', updateGameplayState);
+    window.addEventListener('focus', handleFocus);
     updateGameplayState();
 
     return () => {
-      document.removeEventListener('visibilitychange', updateGameplayState);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
-      window.removeEventListener('focus', updateGameplayState);
+      window.removeEventListener('focus', handleFocus);
+      if (typeof unsubscribePause === 'function') unsubscribePause();
+      else yandexSdk.off?.('game_api_pause', handleSdkPause);
+      if (typeof unsubscribeResume === 'function') unsubscribeResume();
+      else yandexSdk.off?.('game_api_resume', handleSdkResume);
+      if (accountSelectionOpenedEvent) {
+        if (typeof unsubscribeAccountSelectionOpened === 'function') unsubscribeAccountSelectionOpened();
+        else yandexSdk.off?.(accountSelectionOpenedEvent, handleAccountSelectionOpened);
+      }
+      if (accountSelectionClosedEvent) {
+        if (typeof unsubscribeAccountSelectionClosed === 'function') unsubscribeAccountSelectionClosed();
+        else yandexSdk.off?.(accountSelectionClosedEvent, handleAccountSelectionClosed);
+      }
       setGameplayActive(false);
     };
-  }, [yandexSdk, isSetupOpen, isGameOverOpen]);
+  }, [yandexSdk, isSaveHydrated, isSetupOpen, isGameOverOpen, isTurnSummaryOpen, isYandexAdShowing, isYandexPlatformPaused]);
 
   // Save Game on State Change
   const saveCurrentGame = useCallback(() => {
+    if (!isSaveHydrated || !hasActiveGameRef.current) return;
+
     try {
       const data = {
+        _savedAt: Date.now(),
         playerName,
         gameMode,
         goal,
@@ -595,7 +726,9 @@ export default function App() {
         inflationRate,
         keyRate,
         currentNews,
+        activeCrisis,
         newsHistory,
+        pendingTaxRefund,
         stocks,
         bonds,
         deposits,
@@ -615,12 +748,16 @@ export default function App() {
         totalCouponsEarned,
         totalSalaryEarned,
         history,
+        leaderboard,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      if (!isYandexPlatformPaused) yandexCloudSaveQueueRef.current?.schedule(data);
     } catch {
-      // ignore
+      // Keep the browser save as the fallback if cloud sync is unavailable.
     }
   }, [
+    isSaveHydrated,
+    isYandexPlatformPaused,
     playerName,
     gameMode,
     goal,
@@ -641,7 +778,9 @@ export default function App() {
     inflationRate,
     keyRate,
     currentNews,
+    activeCrisis,
     newsHistory,
+    pendingTaxRefund,
     stocks,
     bonds,
     deposits,
@@ -661,14 +800,35 @@ export default function App() {
     totalCouponsEarned,
     totalSalaryEarned,
     history,
+    leaderboard,
   ]);
 
   useEffect(() => {
     saveCurrentGame();
   }, [saveCurrentGame]);
 
+  useEffect(() => {
+    if (!IS_YANDEX_GAMES_BUILD || !isSaveHydrated) return;
+
+    const flushCloudSave = () => {
+      void yandexCloudSaveQueueRef.current?.flush(true);
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) flushCloudSave();
+    };
+
+    window.addEventListener('pagehide', flushCloudSave);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushCloudSave);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isSaveHydrated]);
+
   // Background Prefetch for Next Turn
   useEffect(() => {
+    if (!isSaveHydrated) return;
+
     let cancelled = false;
     const prefetch = async () => {
       try {
@@ -713,7 +873,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [year, hasCar, hasApartment, hasBusiness, character.name, character.role, activeCrisis?.headline]);
+  }, [isSaveHydrated, year, hasCar, hasApartment, hasBusiness, character.name, character.role, activeCrisis?.headline]);
 
   // Start New Game Handler
   const handleStartGame = (params: {
@@ -722,6 +882,7 @@ export default function App() {
     mode: GameMode;
     goal: LifeGoal;
   }) => {
+    hasActiveGameRef.current = true;
     setPlayerName(params.playerName);
     setCharacter(params.character);
     setGameMode(params.mode);
@@ -1277,21 +1438,21 @@ export default function App() {
         chosenEvent = prefetchedEvent;
       } else {
         const recent = recentEventIds || [];
-        let eligible = EXPANDED_EVENTS_POOL.filter((event) => {
+        let eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
           if (event.requiresCar && !hasCar) return false;
           if (event.requiresApartment && !hasApartment) return false;
           return !recent.includes(event.id);
         });
 
         if (eligible.length === 0) {
-          eligible = EXPANDED_EVENTS_POOL.filter((event) => {
+          eligible = LOCAL_GAMEPLAY_EVENTS.filter((event) => {
             if (event.requiresCar && !hasCar) return false;
             if (event.requiresApartment && !hasApartment) return false;
             return true;
           });
         }
 
-        chosenEvent = eligible[Math.floor(Math.random() * eligible.length)] || EXPANDED_EVENTS_POOL[0];
+        chosenEvent = eligible[Math.floor(Math.random() * eligible.length)] || LOCAL_GAMEPLAY_EVENTS[0];
       }
 
       setCurrentEvent(chosenEvent);
@@ -1951,6 +2112,26 @@ export default function App() {
     localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(updated));
   };
 
+  const handleCloseTurnSummary = useCallback(() => {
+    setIsTurnSummaryOpen(false);
+
+    const completedYear = lastTurnReport?.year ?? 0;
+    const shouldShowAd =
+      IS_YANDEX_GAMES_BUILD &&
+      Boolean(yandexSdk) &&
+      !isGameOverOpen &&
+      completedYear > 0 &&
+      completedYear % 3 === 0;
+    if (!shouldShowAd || !yandexSdk) return;
+
+    setIsYandexAdShowing(true);
+    yandexSdk.features?.GameplayAPI?.stop?.();
+    yandexGameplayActiveRef.current = false;
+    sound.suspend();
+    void yandexCloudSaveQueueRef.current?.flush(true);
+    void showYandexFullscreenAd(yandexSdk).finally(() => setIsYandexAdShowing(false));
+  }, [lastTurnReport, yandexSdk, isGameOverOpen]);
+
   // Finish Goal Early
   const handleFinishGameEarly = () => {
     const status = evaluateGoalStatus({
@@ -1973,6 +2154,17 @@ export default function App() {
     recordLeaderboard(true, year, joy, netWorth);
     sound.playJoy();
   };
+
+  if (IS_YANDEX_GAMES_BUILD && !isSaveHydrated) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-700 font-sans">
+        <div className="rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm text-center">
+          <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-4 border-emerald-100 border-t-emerald-600" />
+          <p className="font-semibold">Загружаем сохранение…</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -2158,7 +2350,7 @@ export default function App() {
       {/* Modals */}
       <TurnSummaryModal
         isOpen={isTurnSummaryOpen}
-        onClose={() => setIsTurnSummaryOpen(false)}
+        onClose={handleCloseTurnSummary}
         report={lastTurnReport}
         inflationRate={inflationRate}
         currentNews={currentNews}
